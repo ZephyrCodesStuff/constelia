@@ -1,0 +1,27 @@
+[[targets]]
+id = "web1"
+host = "web1.ctf.example.com"
+port = 80
+service = "http"
+tags = ["web", "php"]
+
+[[targets]]
+id = "web2"
+host = "web2.ctf.example.com"
+port = 80
+service = "http"
+tags = ["web", "nodejs"]
+
+[[targets]]
+id = "pwn1"
+host = "pwn1.ctf.example.com"
+port = 1337
+service = "tcp"
+tags = ["pwn", "x86_64"]
+
+[[targets]]
+id = "rev1"
+host = "rev1.ctf.example.com"
+port = 1338
+service = "tcp"
+tags = ["rev", "x86_64"]

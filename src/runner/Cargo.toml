@@ -1,0 +1,24 @@
+[package]
+name = "runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bollard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio-stream = { workspace = true }
+regex = { workspace = true }
+tonic-reflection = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.13.1"

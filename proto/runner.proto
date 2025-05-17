@@ -1,0 +1,40 @@
+syntax = "proto3";
+package runner;
+
+service Runner {
+  // RunJob executes a single job and returns the result
+  rpc RunJob(RunJobRequest) returns (RunJobResponse);
+
+  // StreamJobs receives a stream of jobs and returns a stream of results
+  rpc StreamJobs(stream RunJobRequest) returns (stream RunJobResponse);
+}
+
+message RunJobRequest {
+  string job_id = 1;
+  Target target = 2;
+  string exploit_name = 3;
+  string flag_regex = 4;
+}
+
+message Target {
+  string id = 1;
+  string host = 2;
+  uint32 port = 3;
+  string service = 4;
+  repeated string tags = 5;
+}
+
+message RunJobResponse {
+  string job_id = 1;
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+  repeated Flag flags = 5;
+}
+
+message Flag {
+  string value = 1;
+  string target_id = 2;
+  string exploit_name = 3;
+  string timestamp = 4;
+}
