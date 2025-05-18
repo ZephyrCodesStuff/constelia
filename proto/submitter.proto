@@ -1,0 +1,13 @@
+syntax = "proto3";
+package submitter;
+
+service Submitter {
+  rpc SubmitFlags(SubmissionRequest) returns (SubmissionResponse);
+}
+
+message SubmissionRequest { repeated string flags = 1; }
+
+message SubmissionResponse {
+  bool ok = 1;
+  string message = 2;
+}

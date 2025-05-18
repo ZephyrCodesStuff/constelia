@@ -14,3 +14,9 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tonic-reflection = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.13.1"

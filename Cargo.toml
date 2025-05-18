@@ -1,5 +1,11 @@
 [workspace]
-members = ["src/scheduler", "src/runner", "src/submitter", "src/common"]
+members = [
+    "src/scheduler",
+    "src/runner",
+    "src/submitter",
+    "src/common",
+    "src/cli",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -26,3 +32,7 @@ regex = "1.11.1"
 tonic = "0.13.1"
 prost = "0.13.5"
 tonic-reflection = "0.13.1"
+tempfile = "3.20.0"
+tar = "0.4.44"
+flate2 = "1.1.1"
+uuid = { version = "1.7", features = ["v4"] }

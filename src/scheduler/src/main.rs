@@ -1,93 +1,71 @@
 use anyhow::Result;
-use chrono::Utc;
-use clap::Parser;
-use common::{ExploitMetadata, Job, Target};
-use std::path::PathBuf;
-use tokio::fs;
-use tracing::{info, Level};
-use uuid::Uuid;
+use services::{
+    heartbeat::{check_runners, HeartbeatService, HEARTBEAT_CHECK_INTERVAL_SECS},
+    heartbeat_proto,
+    scheduler::{SchedulerService, SchedulerState},
+    scheduler_proto,
+};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
+use tonic::transport::Server;
+use tracing::{debug, info};
+use tracing_subscriber::EnvFilter;
 
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    /// Path to targets.toml
-    #[arg(short, long, default_value = "targets.toml")]
-    targets: PathBuf,
+use heartbeat_proto::heartbeat_server::HeartbeatServer;
+use scheduler_proto::scheduler_server::SchedulerServer;
 
-    /// Path to exploits directory
-    #[arg(short, long, default_value = "exploits")]
-    exploits: PathBuf,
-
-    /// Run a single round of job dispatch
-    #[arg(short, long)]
-    run_once: bool,
-}
+mod services;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .pretty()
+        .init();
 
-    let cli = Cli::parse();
-    info!("Starting scheduler with targets: {:?}", cli.targets);
+    // Start Heartbeat gRPC server
+    let addr = "0.0.0.0:50052".parse().unwrap();
 
-    // Load targets and exploits
-    let targets = load_targets(&cli.targets).await?;
-    let exploits = load_exploits(&cli.exploits).await?;
+    let state = SchedulerState::default();
+    let state_arc = Arc::new(RwLock::new(state));
 
-    // Generate jobs
-    let jobs = generate_jobs(&targets, &exploits);
-    info!("Generated {} jobs", jobs.len());
+    let heartbeat_service = HeartbeatService {
+        state: state_arc.clone(),
+    };
+    let scheduler_service = SchedulerService { state: state_arc };
 
-    // TODO: Send jobs to queue
-    for job in jobs {
-        info!("Job: {:?}", job);
-    }
+    // Periodic task to check for alive runners
+    let state_for_checker = heartbeat_service.state.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(HEARTBEAT_CHECK_INTERVAL_SECS)).await;
+            let mut state = state_for_checker.write().unwrap();
+
+            // Make sure that runners are still alive
+            check_runners(&mut state.runners);
+
+            debug!("{} runners are alive", state.runners.len());
+        }
+    });
+
+    // Add reflection service
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(heartbeat_proto::FILE_DESCRIPTOR_SET)
+        .register_encoded_file_descriptor_set(scheduler_proto::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .unwrap();
+
+    info!("Scheduler server started on {}", addr);
+
+    Server::builder()
+        .add_service(HeartbeatServer::new(heartbeat_service))
+        .add_service(SchedulerServer::new(scheduler_service))
+        .add_service(reflection_service)
+        .serve(addr)
+        .await?;
 
     Ok(())
-}
-
-async fn load_targets(path: &PathBuf) -> Result<Vec<Target>> {
-    let contents = fs::read_to_string(path).await?;
-    let targets: Vec<Target> = toml::from_str(&contents)?;
-    Ok(targets)
-}
-
-async fn load_exploits(dir: &PathBuf) -> Result<Vec<ExploitMetadata>> {
-    let mut exploits = Vec::new();
-    let mut entries = fs::read_dir(dir).await?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        if entry.path().extension().and_then(|s| s.to_str()) == Some("toml") {
-            let contents = fs::read_to_string(entry.path()).await?;
-            let metadata: ExploitMetadata = toml::from_str(&contents)?;
-            exploits.push(metadata);
-        }
-    }
-
-    Ok(exploits)
-}
-
-fn generate_jobs(targets: &[Target], exploits: &[ExploitMetadata]) -> Vec<Job> {
-    let mut jobs = Vec::new();
-    let now = Utc::now();
-
-    for target in targets {
-        for exploit in exploits {
-            // TODO: Add matching logic based on tags
-            let job = Job {
-                id: Uuid::new_v4().to_string(),
-                target: target.clone(),
-                exploit_name: exploit.name.clone(),
-                status: common::JobStatus::Pending,
-                created_at: now,
-                updated_at: now,
-                result: None,
-                flag_regex: r"[A-Z0-9]{31}=".to_string(),
-            };
-            jobs.push(job);
-        }
-    }
-
-    jobs
 }

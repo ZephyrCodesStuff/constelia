@@ -19,6 +19,9 @@ prost = { workspace = true }
 tokio-stream = { workspace = true }
 regex = { workspace = true }
 tonic-reflection = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+tempfile = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.13.1"

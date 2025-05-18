@@ -1,91 +1,131 @@
-use anyhow::Result;
-use clap::Parser;
-use common::Flag;
-use reqwest::Client;
-use std::collections::HashSet;
-use tracing::{error, info, Level};
+use std::time::Duration;
 
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    /// CTFd API URL
-    #[arg(short, long)]
-    api_url: String,
+use reqwest::{
+    header::{HeaderMap, HeaderName},
+    Client, ClientBuilder,
+};
+use serde_json::{json, Value};
+use tonic::{transport::Server, Request, Response, Status};
 
-    /// CTFd API token
-    #[arg(short, long)]
-    api_token: String,
+pub mod submitter_proto {
+    tonic::include_proto!("submitter");
+    pub const FILE_DESCRIPTOR_SET: &[u8] =
+        tonic::include_file_descriptor_set!("submitter_descriptor");
+}
+
+use submitter_proto::{
+    submitter_server::{Submitter, SubmitterServer},
+    SubmissionRequest, SubmissionResponse,
+};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
+// TODO: Make this configurable
+const TEAM_TOKEN: &str = "team-token";
+const BASE_URL: &str = "http://10.10.0.1:8080/flags";
+
+#[derive(Debug)]
+pub struct SubmitterService {
+    client: Client,
+}
+
+impl SubmitterService {
+    pub fn new() -> Self {
+        let headers = HeaderMap::from_iter(vec![
+            (
+                HeaderName::from_static("x-team-token"),
+                TEAM_TOKEN.parse().unwrap(),
+            ),
+            (
+                HeaderName::from_static("content-type"),
+                "application/json".parse().unwrap(),
+            ),
+            (
+                HeaderName::from_static("accept"),
+                "application/json".parse().unwrap(),
+            ),
+            (
+                HeaderName::from_static("user-agent"),
+                "hzrd/submitter".parse().unwrap(),
+            ),
+        ]);
+
+        let client = ClientBuilder::new()
+            .timeout(Duration::from_secs(10))
+            .default_headers(headers)
+            .build()
+            .unwrap();
+
+        Self { client }
+    }
+}
+
+#[tonic::async_trait]
+impl Submitter for SubmitterService {
+    async fn submit_flags(
+        &self,
+        request: Request<SubmissionRequest>,
+    ) -> Result<Response<SubmissionResponse>, Status> {
+        let req = request.into_inner();
+
+        let flags: Value = json!(req.flags);
+
+        info!("Submitting flags: {:?}", flags);
+
+        // TODO: Debugging only!
+        #[cfg(debug_assertions)]
+        {
+            return Ok(Response::new(SubmissionResponse {
+                ok: true,
+                message: "[DEBUG] Flags submitted".to_string(),
+            }));
+        }
+
+        // Submit flags
+        let res = self
+            .client
+            .put(BASE_URL)
+            .json(&flags)
+            .send()
+            .await
+            .map_err(|e| Status::internal(format!("HTTP error: {}", e)))?;
+
+        // TODO: Parse the response
+        if res.status().is_success() {
+            Ok(Response::new(SubmissionResponse {
+                ok: true,
+                message: "Flags submitted".to_string(),
+            }))
+        } else {
+            let msg = res
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            Ok(Response::new(SubmissionResponse {
+                ok: false,
+                message: format!("Failed to submit flags: {}", msg),
+            }))
+        }
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .pretty()
+        .init();
 
-    let cli = Cli::parse();
-    info!("Starting flag submitter");
+    let addr = "[::]:50053".parse()?;
+    let submitter = SubmitterService::new();
 
-    // TODO: Connect to job queue to receive flags
-    // For now, we'll just simulate receiving some flags
-    let flags = simulate_flags();
+    info!("Starting submitter service at {}", addr);
 
-    if let Err(e) = submit_flags(&cli, &flags).await {
-        error!("Failed to submit flags: {}", e);
-    }
-
-    Ok(())
-}
-
-fn simulate_flags() -> Vec<Flag> {
-    // This is just for testing - in reality, we'd get these from the queue
-    vec![
-        Flag {
-            value: "flag{test1}".to_string(),
-            target_id: "target1".to_string(),
-            exploit_name: "exploit1.py".to_string(),
-            timestamp: chrono::Utc::now(),
-        },
-        Flag {
-            value: "flag{test2}".to_string(),
-            target_id: "target2".to_string(),
-            exploit_name: "exploit2.py".to_string(),
-            timestamp: chrono::Utc::now(),
-        },
-    ]
-}
-
-async fn submit_flags(cli: &Cli, flags: &[Flag]) -> Result<()> {
-    let client = Client::new();
-    let mut seen = HashSet::new();
-
-    for flag in flags {
-        // Deduplicate flags
-        if !seen.insert(flag.value.clone()) {
-            info!("Skipping duplicate flag: {}", flag.value);
-            continue;
-        }
-
-        // Submit flag to CTFd
-        let response = client
-            .post(&format!("{}/api/v1/challenges/attempt", cli.api_url))
-            .header("Authorization", format!("Token {}", cli.api_token))
-            .json(&serde_json::json!({
-                "challenge_id": 1, // TODO: Map target_id to challenge_id
-                "submission": flag.value
-            }))
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            info!("Successfully submitted flag: {}", flag.value);
-        } else {
-            error!(
-                "Failed to submit flag {}: {}",
-                flag.value,
-                response.text().await?
-            );
-        }
-    }
+    Server::builder()
+        .add_service(SubmitterServer::new(submitter))
+        .serve(addr)
+        .await?;
 
     Ok(())
 }
