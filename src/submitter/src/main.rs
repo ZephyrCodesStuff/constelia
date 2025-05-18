@@ -72,15 +72,6 @@ impl Submitter for SubmitterService {
 
         info!("Submitting flags: {:?}", flags);
 
-        // TODO: Debugging only!
-        #[cfg(debug_assertions)]
-        {
-            return Ok(Response::new(SubmissionResponse {
-                ok: true,
-                message: "[DEBUG] Flags submitted".to_string(),
-            }));
-        }
-
         // Submit flags
         let res = self
             .client
