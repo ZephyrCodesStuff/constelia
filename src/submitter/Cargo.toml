@@ -17,6 +17,7 @@ chrono = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-reflection = { workspace = true }
+dotenv = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.13.1"

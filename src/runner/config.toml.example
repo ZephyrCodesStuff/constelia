@@ -1,0 +1,11 @@
+[runner]
+id = "runner-1"
+host = "127.0.0.1"
+port = 50051
+
+[heartbeat]
+interval = 30
+
+[scheduler]
+host = "127.0.0.1"
+port = 50052

@@ -100,15 +100,12 @@ pub async fn stream_exploits(
     scheduler_addr: &str,
     exploit_name: &str,
     count: usize,
-    target: Option<String>,
-    port: Option<u16>,
 ) -> Result<()> {
     let mut handles = Vec::new();
     for _ in 0..count {
         let exploit_name = exploit_name.to_string();
         let scheduler_addr = scheduler_addr.to_string();
-        let target = target.clone();
-        let port = port.clone();
+        
         handles.push(tokio::spawn(async move {
             let mut client = SchedulerClient::connect(scheduler_addr).await?;
             let response = client
@@ -207,8 +204,6 @@ async fn main() -> Result<()> {
                 SCHEDULER_ADDR,
                 &stream.exploit,
                 stream.count,
-                stream.target,
-                stream.port,
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to stream exploits: {}", e))?;

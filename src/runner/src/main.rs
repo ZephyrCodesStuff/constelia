@@ -9,6 +9,7 @@ use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod config;
 mod services;
 
 pub mod runner {
@@ -24,6 +25,8 @@ pub mod heartbeat {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenv::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -42,11 +45,13 @@ async fn main() -> Result<()> {
         .register_encoded_file_descriptor_set(heartbeat::FILE_DESCRIPTOR_SET)
         .build_v1()?;
 
-    // Spawn heartbeat task
     let state = Arc::new(RwLock::new(RunnerStatus::Idle));
-    services::heartbeat::spawn_heartbeat_task(state.clone());
+    let config = config::Config::new()?;
 
-    let runner = RunnerService::new(state.clone());
+    // Spawn heartbeat task
+    services::heartbeat::spawn_heartbeat_task(config.clone(), state.clone());
+
+    let runner = RunnerService::new(config, state.clone());
 
     Server::builder()
         .add_service(RunnerServer::new(runner))

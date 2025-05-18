@@ -1,13 +1,13 @@
 use anyhow::Result;
+use config::Config;
 use services::{
-    heartbeat::{check_runners, HeartbeatService, HEARTBEAT_CHECK_INTERVAL_SECS},
+    heartbeat::{check_runners, HeartbeatService},
     heartbeat_proto,
     scheduler::{SchedulerService, SchedulerState},
     scheduler_proto,
 };
 use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
+    net::SocketAddr, sync::{Arc, RwLock}, time::Duration
 };
 use tonic::transport::Server;
 use tracing::{debug, info};
@@ -17,35 +17,46 @@ use heartbeat_proto::heartbeat_server::HeartbeatServer;
 use scheduler_proto::scheduler_server::SchedulerServer;
 
 mod services;
+mod config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenv::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .pretty()
         .init();
 
+    let config = Config::new()?;
+
     // Start Heartbeat gRPC server
-    let addr = "0.0.0.0:50052".parse().unwrap();
+    let addr = SocketAddr::from((config.server.host, config.server.port));
 
     let state = SchedulerState::default();
     let state_arc = Arc::new(RwLock::new(state));
 
     let heartbeat_service = HeartbeatService {
+        config: config.heartbeat,
         state: state_arc.clone(),
     };
-    let scheduler_service = SchedulerService { state: state_arc };
+    let scheduler_service = SchedulerService {
+        submitter: config.submitter,
+        state: state_arc,
+    };
 
     // Periodic task to check for alive runners
     let state_for_checker = heartbeat_service.state.clone();
+    let config = heartbeat_service.config.clone();
+
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(HEARTBEAT_CHECK_INTERVAL_SECS)).await;
+            tokio::time::sleep(Duration::from_secs(config.timeout)).await;
             let mut state = state_for_checker.write().unwrap();
 
             // Make sure that runners are still alive
-            check_runners(&mut state.runners);
+            check_runners(&mut state.runners, &config);
 
             debug!("{} runners are alive", state.runners.len());
         }

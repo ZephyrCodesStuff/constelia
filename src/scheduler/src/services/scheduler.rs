@@ -1,10 +1,11 @@
-use crate::services::runner::Target;
+use crate::{config::SubmitterConfig, services::runner::Target};
 use crate::services::scheduler_proto::{
     scheduler_server::Scheduler, GetExploitsRequest, GetExploitsResponse, RunExploitRequest,
     RunExploitResponse, UploadExploitRequest, UploadExploitResponse,
 };
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::{fs, sync::Arc};
@@ -12,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::runner::{RunJobRequest, RunJobResponse, RunnerInfo};
@@ -21,11 +22,9 @@ use super::scheduler_proto::{
     GetRunnersResponse,
 };
 
-// TODO: Make this configurable
-const SUBMITTER_ADDR: &str = "http://127.0.0.1:50053";
-
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SchedulerService {
+    pub submitter: SubmitterConfig,
     pub state: Arc<RwLock<SchedulerState>>,
 }
 
@@ -82,17 +81,23 @@ impl SchedulerService {
     // Call this when a new runner is registered (e.g., in heartbeat or at startup)
     pub async fn ensure_dispatcher(&self, runner: &RunnerInfo) {
         let mut state = self.state.write().unwrap();
-        if !state.dispatchers.contains_key(&runner.id) {
-            let (tx, rx) = mpsc::channel::<RunJobRequest>(100);
-            state.dispatchers.insert(runner.id.clone(), tx);
-            let runner_addr = runner.addr.clone();
-            let submitter_addr = SUBMITTER_ADDR.to_string();
-            let state = self.state.clone();
-
-            tokio::spawn(async move {
-                run_streaming_dispatcher(state, runner_addr, rx, submitter_addr).await;
-            });
+        
+        // Clean up old dispatcher if it exists
+        if state.dispatchers.contains_key(&runner.id) {
+            info!("Runner {} reconnected, cleaning up old dispatcher", runner.id);
+            state.dispatchers.remove(&runner.id);
         }
+
+        // Create new dispatcher
+        let (tx, rx) = mpsc::channel::<RunJobRequest>(100);
+        state.dispatchers.insert(runner.id.clone(), tx);
+        let runner_addr = runner.addr.clone();
+        let state = self.state.clone();
+        let submitter = self.submitter.clone();
+
+        tokio::spawn(async move {
+            run_streaming_dispatcher(state, submitter, runner_addr, rx).await;
+        });
     }
 }
 
@@ -245,15 +250,15 @@ impl Scheduler for SchedulerService {
 // Dispatcher task for a runner
 async fn run_streaming_dispatcher(
     scheduler_service: Arc<RwLock<SchedulerState>>,
+    submitter: SubmitterConfig,
     runner_addr: String,
     mut rx: mpsc::Receiver<RunJobRequest>,
-    submitter_addr: String,
 ) {
     use super::runner::runner_client::RunnerClient;
     use super::submitter_proto::submitter_client::SubmitterClient;
     use super::submitter_proto::SubmissionRequest;
     use tonic::Request;
-    use tracing::{error, info};
+    use tracing::{error, info, warn};
 
     let mut client = match RunnerClient::connect(runner_addr.clone()).await {
         Ok(c) => c,
@@ -262,6 +267,7 @@ async fn run_streaming_dispatcher(
             return;
         }
     };
+
     let (job_tx, job_rx) = mpsc::channel::<RunJobRequest>(100);
     let outbound = ReceiverStream::new(job_rx);
 
@@ -269,6 +275,7 @@ async fn run_streaming_dispatcher(
     tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
             if job_tx.send(job).await.is_err() {
+                warn!("Failed to forward job to runner, channel closed");
                 break;
             }
         }
@@ -283,34 +290,58 @@ async fn run_streaming_dispatcher(
     };
     tokio::pin!(response_stream);
 
-    while let Some(Ok(response)) = response_stream.next().await {
-        info!("Received job result: {:?}", response);
-        // Store the result in job_results
-        {
-            let mut state = scheduler_service.write().unwrap();
-            state.job_results.insert(
-                response.job_id.clone(),
-                Some(RunJobResponse {
-                    job_id: response.job_id.clone(),
-                    exit_code: response.exit_code,
-                    stdout: response.stdout,
-                    stderr: response.stderr,
-                    flags: response.flags.clone(),
-                }),
-            );
-        }
-        // Submit the flags to the submitter
-        if !response.flags.is_empty() {
-            match SubmitterClient::connect(submitter_addr.clone()).await {
-                Ok(mut submitter) => {
-                    let _ = submitter
-                        .submit_flags(Request::new(SubmissionRequest {
-                            flags: response.flags.iter().map(|f| f.value.clone()).collect(),
-                        }))
-                        .await;
+    while let Some(result) = response_stream.next().await {
+        match result {
+            Ok(response) => {
+                info!("Received job result: {:?}", response);
+                // Store the result in job_results
+                {
+                    let mut state = scheduler_service.write().unwrap();
+                    state.job_results.insert(
+                        response.job_id.clone(),
+                        Some(RunJobResponse {
+                            job_id: response.job_id.clone(),
+                            exit_code: response.exit_code,
+                            stdout: response.stdout,
+                            stderr: response.stderr,
+                            flags: response.flags.clone(),
+                        }),
+                    );
                 }
-                Err(e) => error!("Failed to connect to submitter: {}", e),
+
+                if !submitter.enabled {
+                    continue;
+                }
+
+                // Submit the flags to the submitter
+                if !response.flags.is_empty() {
+                    let addr = SocketAddr::new(submitter.host.into(), submitter.port);
+                    match SubmitterClient::connect(addr.to_string()).await {
+                        Ok(mut submitter) => {
+                            if let Err(e) = submitter
+                                .submit_flags(Request::new(SubmissionRequest {
+                                    flags: response.flags.iter().map(|f| f.value.clone()).collect(),
+                                }))
+                                .await
+                            {
+                                error!("Failed to submit flags: {}", e);
+                            }
+                        }
+                        Err(e) => error!("Failed to connect to submitter: {}", e),
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Error receiving job result: {}", e);
+                break;
             }
         }
+    }
+
+    // Clean up the dispatcher when the stream ends
+    {
+        let mut state = scheduler_service.write().unwrap();
+        state.dispatchers.remove(&runner_addr);
+        info!("Dispatcher for runner {} cleaned up", runner_addr);
     }
 }

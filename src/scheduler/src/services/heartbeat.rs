@@ -7,15 +7,16 @@ use chrono::{DateTime, Utc};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use crate::services::heartbeat_proto::{
+use crate::{config::HeartbeatConfig, services::heartbeat_proto::{
     heartbeat_server::Heartbeat, HeartbeatRequest, HeartbeatResponse,
-};
+}};
 
 use super::runner::RunnerInfo;
 use super::scheduler::SchedulerState;
 
 #[derive(Debug, Default)]
 pub struct HeartbeatService {
+    pub config: HeartbeatConfig,
     pub state: Arc<RwLock<SchedulerState>>,
 }
 
@@ -51,16 +52,13 @@ impl Heartbeat for HeartbeatService {
     }
 }
 
-pub const HEARTBEAT_TIMEOUT_SECS: i64 = 60;
-pub const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 10;
-
-pub fn check_runners(runners: &mut HashMap<String, RunnerInfo>) {
+pub fn check_runners(runners: &mut HashMap<String, RunnerInfo>, config: &HeartbeatConfig) {
     let now = Utc::now();
     let mut to_remove = Vec::new();
     for (runner_id, runner) in runners.iter() {
         if let Ok(dt) = DateTime::parse_from_rfc3339(runner.last_seen.as_str()) {
             let dt_utc = dt.with_timezone(&Utc);
-            if (now - dt_utc).num_seconds() > HEARTBEAT_TIMEOUT_SECS {
+            if (now - dt_utc).num_seconds() > config.timeout as i64 {
                 to_remove.push(runner_id.clone());
             }
         } else {
