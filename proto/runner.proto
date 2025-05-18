@@ -18,11 +18,18 @@ message RunJobRequest {
 }
 
 message Target {
-  string id = 1;
+  /// ID for the target
+  ///
+  /// Preferably lowercase and kebab-case.
+  ///
+  /// If not provided, the host will try to be used as the ID.
+  optional string id = 1;
+
+  /// Host of the target
   string host = 2;
+
+  /// Port of the target
   uint32 port = 3;
-  string service = 4;
-  repeated string tags = 5;
 }
 
 message RunJobResponse {
@@ -34,9 +41,16 @@ message RunJobResponse {
 }
 
 message Flag {
-  string value = 1;
-  string target_id = 2;
+  /// Target we've found the flag on
+  optional string target_id = 1;
+
+  /// Value of the flag
+  string value = 2;
+
+  /// Name of the exploit that found the flag
   string exploit_name = 3;
+
+  /// Timestamp of when the flag was found
   string timestamp = 4;
 }
 

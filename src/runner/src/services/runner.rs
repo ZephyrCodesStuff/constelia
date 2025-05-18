@@ -1,8 +1,7 @@
 use anyhow::Result;
 use bollard::{
     container::{
-        AttachContainerOptions, Config as ContainerConfig, CreateContainerOptions,
-        RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
+        AttachContainerOptions, Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions
     },
     image::CreateImageOptions,
     secret::HostConfig,
@@ -67,8 +66,6 @@ async fn run_job_internal(
         ..Default::default()
     }), None, None).next().await.unwrap().unwrap();
 
-    let image_id = image.id;
-
     if let Some(error) = image.error {
         error!("Failed to create image: {}", error);
         return Err(Status::internal(format!("Failed to create image: {}", error)));
@@ -87,6 +84,7 @@ async fn run_job_internal(
         env: Some(env),
         host_config: Some(HostConfig {
             binds: Some(vec![format!("{}:/app", exploit_folder.display())]),
+            network_mode: Some("host".to_string()),
             ..Default::default()
         }),
         ..Default::default()
@@ -94,6 +92,7 @@ async fn run_job_internal(
 
     info!("Starting container with config: {:?}", container_config);
 
+    #[allow(unused_variables, reason = "This returns something, but we don't really need it and we're already checking for errors")]
     let container = docker
         .create_container(
             Some(CreateContainerOptions {

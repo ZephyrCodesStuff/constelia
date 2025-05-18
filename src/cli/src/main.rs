@@ -16,8 +16,8 @@ pub mod scheduler {
 }
 
 use scheduler::{
-    GetExploitsRequest, GetJobResultRequest, GetJobsRequest, GetRunnersRequest, RunExploitRequest,
-    UploadExploitRequest, scheduler_client::SchedulerClient,
+    GetExploitsRequest, GetJobResultRequest, GetJobsRequest, GetRunnersRequest, GetTargetsRequest,
+    RunExploitRequest, UploadExploitRequest, scheduler_client::SchedulerClient,
 };
 
 mod cli;
@@ -66,11 +66,21 @@ pub async fn list_exploits(scheduler_addr: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_exploit(scheduler_addr: &str, exploit_name: &str) -> Result<()> {
+pub async fn list_targets(scheduler_addr: &str) -> Result<()> {
+    let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
+    let response = client.get_targets(Request::new(GetTargetsRequest {})).await?;
+    let targets = response.into_inner().targets;
+
+    info!("Targets: {:?}", targets);
+    Ok(())
+}
+
+pub async fn run_exploit(scheduler_addr: &str, exploit_name: &str, target: &str) -> Result<()> {
     let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
     let response = client
         .run_exploit(Request::new(RunExploitRequest {
             exploit_name: exploit_name.to_string(),
+            target: target.to_string(),
         }))
         .await?;
 
@@ -100,18 +110,20 @@ pub async fn stream_exploits(
     scheduler_addr: &str,
     exploit_name: &str,
     count: usize,
+    target: &str,
 ) -> Result<()> {
     let mut handles = Vec::new();
     for _ in 0..count {
         let exploit_name = exploit_name.to_string();
         let scheduler_addr = scheduler_addr.to_string();
-        
+        let target = target.to_string();
+
         handles.push(tokio::spawn(async move {
             let mut client = SchedulerClient::connect(scheduler_addr).await?;
             let response = client
                 .run_exploit(Request::new(RunExploitRequest {
                     exploit_name: exploit_name.clone(),
-                    // You can extend this to pass target/port if your proto supports it
+                    target: target.to_string(),
                 }))
                 .await?;
             let response = response.into_inner();
@@ -189,8 +201,13 @@ async fn main() -> Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to list exploits: {}", e))?;
         }
+        cli::Action::Targets(_) => {
+            list_targets(SCHEDULER_ADDR)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to list targets: {}", e))?;
+        }
         cli::Action::Run(run) => {
-            run_exploit(SCHEDULER_ADDR, &run.exploit)
+            run_exploit(SCHEDULER_ADDR, &run.exploit, &run.target)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to run exploit: {}", e))?;
         }
@@ -204,6 +221,7 @@ async fn main() -> Result<()> {
                 SCHEDULER_ADDR,
                 &stream.exploit,
                 stream.count,
+                &stream.target,
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to stream exploits: {}", e))?;

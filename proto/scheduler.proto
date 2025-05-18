@@ -10,6 +10,9 @@ service Scheduler {
   // GetExploits lists all the exploits available on the scheduler
   rpc GetExploits(GetExploitsRequest) returns (GetExploitsResponse);
 
+  // GetTargets lists all the targets available on the scheduler
+  rpc GetTargets(GetTargetsRequest) returns (GetTargetsResponse);
+
   // RunExploit runs an exploit on the scheduler
   rpc RunExploit(RunExploitRequest) returns (RunExploitResponse);
 
@@ -33,11 +36,18 @@ message UploadExploitResponse {
   string message = 2;
 }
 
+message GetTargetsRequest {}
+
+message GetTargetsResponse { repeated runner.Target targets = 1; }
+
 message GetExploitsRequest {}
 
 message GetExploitsResponse { repeated string exploit_names = 1; }
 
-message RunExploitRequest { string exploit_name = 1; }
+message RunExploitRequest {
+  string exploit_name = 1;
+  string target = 2;
+}
 
 message RunExploitResponse {
   bool ok = 1;

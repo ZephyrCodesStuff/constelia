@@ -1,4 +1,5 @@
-use crate::{config::SubmitterConfig, services::runner::Target};
+use crate::config::{Config, Target};
+use crate::{config::SubmitterConfig};
 use crate::services::scheduler_proto::{
     scheduler_server::Scheduler, GetExploitsRequest, GetExploitsResponse, RunExploitRequest,
     RunExploitResponse, UploadExploitRequest, UploadExploitResponse,
@@ -19,7 +20,7 @@ use uuid::Uuid;
 use super::runner::{RunJobRequest, RunJobResponse, RunnerInfo};
 use super::scheduler_proto::{
     GetJobResultRequest, GetJobResultResponse, GetJobsRequest, GetJobsResponse, GetRunnersRequest,
-    GetRunnersResponse,
+    GetRunnersResponse, GetTargetsRequest, GetTargetsResponse,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -34,6 +35,17 @@ pub struct SchedulerState {
     pub runners: HashMap<String, RunnerInfo>,
     pub dispatchers: HashMap<String, mpsc::Sender<RunJobRequest>>, // runner_id -> job sender
     pub job_results: HashMap<String, Option<RunJobResponse>>, // job_id -> result (None if not finished)
+    pub targets: Vec<Target>,
+}
+
+impl SchedulerState {
+    pub fn new(config: &Config) -> Self {
+        let targets = config.targets.clone();
+        Self {
+            targets,
+            ..Default::default()
+        }
+    }
 }
 
 impl Default for SchedulerState {
@@ -73,6 +85,7 @@ impl Default for SchedulerState {
             runners: HashMap::new(),
             dispatchers: HashMap::new(),
             job_results: HashMap::new(),
+            targets: vec![],
         }
     }
 }
@@ -168,17 +181,21 @@ impl Scheduler for SchedulerService {
         self.ensure_dispatcher(&runner).await;
 
         let job_id = Uuid::new_v4().to_string();
+
+        // `req.target` is either the target ID or the host
+        // We can try to find it from our config
+        let Some(target) = ({
+            let state = self.state.read().unwrap();
+            state.targets.iter().find(|t| t.id == Some(req.target.clone()) || t.host.to_string() == req.target).cloned()
+        }) else {
+            return Err(Status::not_found(format!("Target {} not found", req.target)));
+        };
+
         let request = RunJobRequest {
             job_id: job_id.clone(),
-            target: Some(Target {
-                id: "1".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 80,
-                service: "http".to_string(),
-                tags: vec![],
-            }),
+            target: Some(target.into()),
             exploit_name: req.exploit_name,
-            flag_regex: "[A-Z0-9]{31}=".to_string(),
+            flag_regex: self.submitter.flag_regex.clone(),
             exploit_bundle: fs::read(&exploit_path)
                 .map_err(|e| Status::internal(format!("Failed to read exploit bundle: {}", e)))?,
         };
@@ -208,6 +225,15 @@ impl Scheduler for SchedulerService {
             ok: true,
             message: job_id, // Return job_id as message
         }))
+    }
+
+    async fn get_targets(
+        &self,
+        _request: Request<GetTargetsRequest>,
+    ) -> Result<Response<GetTargetsResponse>, Status> {
+        let state = self.state.read().unwrap();
+        let targets = state.targets.clone();
+        Ok(Response::new(GetTargetsResponse { targets: targets.into_iter().map(|t| t.into()).collect() }))
     }
 
     async fn get_runners(

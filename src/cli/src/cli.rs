@@ -12,6 +12,7 @@ pub struct Cli {
 pub enum Action {
     Upload(Upload),
     List(List),
+    Targets(Targets),
     Run(Run),
     Runners(Runners),
     Stream(Stream),
@@ -33,10 +34,17 @@ pub struct Upload {
 pub struct List {}
 
 #[derive(Debug, Parser)]
+pub struct Targets {}
+
+#[derive(Debug, Parser)]
 pub struct Run {
     /// Name of the exploit to run
     #[clap(short, long)]
     pub exploit: String,
+
+    /// Target ID or host
+    #[clap(short, long)]
+    pub target: String,
 }
 
 #[derive(Debug, Parser)]
@@ -47,15 +55,14 @@ pub struct Stream {
     /// Name of the exploit to run
     #[clap(short, long)]
     pub exploit: String,
+    
     /// Number of jobs to run in parallel
     #[clap(short, long, default_value = "5")]
     pub count: usize,
-    /// Optional target host
+
+    /// Target ID or host
     #[clap(long)]
-    pub target: Option<String>,
-    /// Optional target port
-    #[clap(long)]
-    pub port: Option<u16>,
+    pub target: String,
 }
 
 #[derive(Debug, Parser)]

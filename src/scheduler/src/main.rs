@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     // Start Heartbeat gRPC server
     let addr = SocketAddr::from((config.server.host, config.server.port));
 
-    let state = SchedulerState::default();
+    let state = SchedulerState::new(&config);
     let state_arc = Arc::new(RwLock::new(state));
 
     let heartbeat_service = HeartbeatService {
