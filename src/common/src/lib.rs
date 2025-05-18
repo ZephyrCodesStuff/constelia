@@ -41,32 +41,3 @@ pub struct Flag {
     pub exploit_name: String,
     pub timestamp: DateTime<Utc>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Job {
-    pub id: String,
-    pub target: Target,
-    pub exploit_name: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub result: Option<JobResult>,
-    pub flag_regex: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum JobStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobResult {
-    pub flags: Vec<Flag>,
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-    pub duration_ms: u64,
-}

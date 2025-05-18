@@ -1,6 +1,8 @@
 syntax = "proto3";
 package scheduler;
 
+import "runner.proto";
+
 service Scheduler {
   // UploadExploit uploads an exploit bundle to the scheduler
   rpc UploadExploit(UploadExploitRequest) returns (UploadExploitResponse);
@@ -13,6 +15,12 @@ service Scheduler {
 
   // GetRunners returns a list of all runners
   rpc GetRunners(GetRunnersRequest) returns (GetRunnersResponse);
+
+  // GetJobResult returns the result of a job
+  rpc GetJobResult(GetJobResultRequest) returns (GetJobResultResponse);
+
+  // GetJobs returns a list of all jobs
+  rpc GetJobs(GetJobsRequest) returns (GetJobsResponse);
 }
 
 message UploadExploitRequest {
@@ -45,3 +53,14 @@ message Runner {
 }
 
 message GetRunnersResponse { repeated Runner runners = 1; }
+
+message GetJobResultRequest { string job_id = 1; }
+
+message GetJobResultResponse {
+  bool finished = 1;
+  runner.RunJobResponse result = 2;
+}
+
+message GetJobsRequest {}
+
+message GetJobsResponse { repeated runner.RunJobResponse jobs = 1; }

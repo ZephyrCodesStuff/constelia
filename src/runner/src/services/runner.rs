@@ -8,11 +8,13 @@ use bollard::{
     Docker,
 };
 use chrono::Utc;
-use common::{Job, JobStatus};
 use futures::StreamExt;
-use std::io::{BufReader, Write};
+use std::{
+    io::{BufReader, Write},
+    sync::Arc,
+};
 use tempfile::TempDir;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
@@ -22,12 +24,17 @@ use crate::runner::{runner_server::Runner, Flag, RunJobRequest, RunJobResponse};
 #[derive(Debug)]
 pub struct RunnerService {
     docker: Docker,
+    semaphore: Arc<Semaphore>,
 }
+
+// TODO: Make this configurable
+const MAX_CONCURRENT_JOBS: usize = 10;
 
 impl Default for RunnerService {
     fn default() -> Self {
         Self {
             docker: Docker::connect_with_local_defaults().unwrap(),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
         }
     }
 }
@@ -38,10 +45,11 @@ impl Runner for RunnerService {
         &self,
         request: Request<RunJobRequest>,
     ) -> Result<Response<RunJobResponse>, Status> {
+        // Acquire a permit from the semaphore
+        let _permit = self.semaphore.acquire().await;
+
         let req = request.into_inner();
         info!("Received job request: {}", req.job_id);
-
-        let target = req.target.expect("Target is required");
 
         let tempdir = TempDir::new()
             .map_err(|e| Status::internal(format!("Failed to create tempdir: {}", e)))?;
@@ -61,26 +69,11 @@ impl Runner for RunnerService {
             .unpack(&exploit_folder)
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let job = Job {
-            id: req.job_id.clone(),
-            target: common::Target {
-                id: target.id,
-                host: target.host,
-                port: target.port as u16,
-                service: target.service,
-                tags: target.tags,
-            },
-            exploit_name: req.exploit_name.clone(),
-            status: JobStatus::Pending,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            result: None,
-            flag_regex: req.flag_regex.clone(),
-        };
+        let target = req.target.as_ref().expect("Target is required");
 
         let env = vec![
-            format!("TARGET_HOST={}", job.target.host),
-            format!("TARGET_PORT={}", job.target.port),
+            format!("TARGET_HOST={}", target.host),
+            format!("TARGET_PORT={}", target.port),
         ];
 
         info!("Exploit folder (temp): {}", exploit_folder.display());
@@ -97,7 +90,7 @@ impl Runner for RunnerService {
             ..Default::default()
         };
 
-        let container_name = format!("hzrd-{}", job.id);
+        let container_name = format!("hzrd-{}", req.job_id);
 
         let options = Some(CreateContainerOptions {
             name: &container_name,
@@ -170,7 +163,7 @@ impl Runner for RunnerService {
             .await
             .map_err(|e| Status::internal(format!("Join error: {}", e)))?;
 
-        let flags = parse_flags(&stdout, &stderr, &job);
+        let flags = parse_flags(&stdout, &stderr, &req.clone());
 
         info!("Container exited with code {}", exit_code);
 
@@ -187,19 +180,11 @@ impl Runner for RunnerService {
             .map_err(|e| Status::internal(format!("Docker remove_container failed: {}", e)))?;
 
         let response = RunJobResponse {
-            job_id: job.id,
+            job_id: req.job_id,
             exit_code: exit_code as i32,
             stdout: String::from_utf8_lossy(&stdout).to_string(),
             stderr: String::from_utf8_lossy(&stderr).to_string(),
-            flags: flags
-                .into_iter()
-                .map(|f| Flag {
-                    value: f.value,
-                    target_id: f.target_id,
-                    exploit_name: f.exploit_name,
-                    timestamp: f.timestamp.to_rfc3339(),
-                })
-                .collect(),
+            flags: flags.into_iter().collect(),
         };
         Ok(Response::new(response))
     }
@@ -210,67 +195,48 @@ impl Runner for RunnerService {
         &self,
         request: Request<tonic::Streaming<RunJobRequest>>,
     ) -> Result<Response<Self::StreamJobsStream>, Status> {
+        let semaphore = self.semaphore.clone();
+
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
 
         let docker = self.docker.clone();
         tokio::spawn(async move {
             while let Some(req) = stream.next().await {
-                match req {
-                    Ok(req) => {
-                        let target = req.target.expect("Target is required");
+                let semaphore = semaphore.clone();
+                let tx = tx.clone();
+                let docker = docker.clone();
 
-                        let job = Job {
-                            id: req.job_id,
-                            target: common::Target {
-                                id: target.id,
-                                host: target.host,
-                                port: target.port as u16,
-                                service: target.service,
-                                tags: target.tags,
-                            },
-                            exploit_name: req.exploit_name,
-                            status: JobStatus::Pending,
-                            created_at: Utc::now(),
-                            updated_at: Utc::now(),
-                            result: None,
-                            flag_regex: req.flag_regex,
-                        };
+                tokio::spawn(async move {
+                    let _permit = semaphore.acquire().await;
 
-                        match run_job(&docker, &job).await {
+                    match req {
+                        Ok(req) => match run_job(&docker, &req).await {
                             Ok((exit_code, stdout, stderr, flags)) => {
                                 let response = RunJobResponse {
-                                    job_id: job.id,
+                                    job_id: req.job_id,
                                     exit_code,
                                     stdout,
                                     stderr,
-                                    flags: flags
-                                        .into_iter()
-                                        .map(|f| Flag {
-                                            value: f.value,
-                                            target_id: f.target_id,
-                                            exploit_name: f.exploit_name,
-                                            timestamp: f.timestamp.to_rfc3339(),
-                                        })
-                                        .collect(),
+                                    flags: flags.into_iter().collect(),
                                 };
                                 if tx.send(Ok(response)).await.is_err() {
-                                    break;
+                                    return;
                                 }
                             }
                             Err(e) => {
                                 error!("Job failed: {}", e);
                                 if tx.send(Err(Status::internal(e.to_string()))).await.is_err() {
-                                    break;
+                                    return;
                                 }
                             }
+                        },
+                        Err(e) => {
+                            error!("Stream error: {}", e);
+                            return;
                         }
                     }
-                    Err(e) => {
-                        error!("Stream error: {}", e);
-                        break;
-                    }
-                }
+                });
             }
         });
 
@@ -278,28 +244,28 @@ impl Runner for RunnerService {
     }
 }
 
-fn parse_flags(stdout: &[u8], stderr: &[u8], job: &Job) -> Vec<common::Flag> {
+fn parse_flags(stdout: &[u8], stderr: &[u8], job: &RunJobRequest) -> Vec<Flag> {
     let mut flags = Vec::new();
     let flag_pattern = regex::Regex::new(&job.flag_regex).unwrap();
 
     if let Ok(stdout_str) = String::from_utf8(stdout.to_vec()) {
         for cap in flag_pattern.captures_iter(&stdout_str) {
-            flags.push(common::Flag {
+            flags.push(Flag {
                 value: cap[0].to_string(),
-                target_id: job.target.id.clone(),
+                target_id: job.target.as_ref().unwrap().id.clone(),
                 exploit_name: job.exploit_name.clone(),
-                timestamp: Utc::now(),
+                timestamp: Utc::now().to_rfc3339(),
             });
         }
     }
 
     if let Ok(stderr_str) = String::from_utf8(stderr.to_vec()) {
         for cap in flag_pattern.captures_iter(&stderr_str) {
-            flags.push(common::Flag {
+            flags.push(Flag {
                 value: cap[0].to_string(),
-                target_id: job.target.id.clone(),
+                target_id: job.target.as_ref().unwrap().id.clone(),
                 exploit_name: job.exploit_name.clone(),
-                timestamp: Utc::now(),
+                timestamp: Utc::now().to_rfc3339(),
             });
         }
     }
@@ -307,25 +273,33 @@ fn parse_flags(stdout: &[u8], stderr: &[u8], job: &Job) -> Vec<common::Flag> {
     flags
 }
 
-async fn run_job(docker: &Docker, job: &Job) -> Result<(i32, String, String, Vec<common::Flag>)> {
-    info!("Running job {} for target {}", job.id, job.target.id);
+async fn run_job(docker: &Docker, job: &RunJobRequest) -> Result<(i32, String, String, Vec<Flag>)> {
+    info!(
+        "Running job {} for target {}",
+        job.job_id,
+        job.target.as_ref().unwrap().id
+    );
+
+    let Some(target) = job.target.clone() else {
+        return Err(anyhow::anyhow!("Target is required"));
+    };
 
     let env = vec![
-        format!("TARGET_HOST={}", job.target.host),
-        format!("TARGET_PORT={}", job.target.port),
+        format!("TARGET_HOST={}", target.host),
+        format!("TARGET_PORT={}", target.port),
     ];
 
-    let current_dir = std::env::current_dir().unwrap();
-    let exploit_folder = current_dir.join("exploits").join(&job.exploit_name);
+    // Create a tempdir for the exploit
+    let tempdir =
+        TempDir::new().map_err(|e| Status::internal(format!("Failed to create tempdir: {}", e)))?;
+    let exploit_folder = tempdir.path();
 
-    info!("Exploit folder: {}", exploit_folder.display());
-
-    if !exploit_folder.exists() {
-        return Err(anyhow::anyhow!(
-            "Exploit folder does not exist: {}",
-            exploit_folder.display()
-        ));
-    }
+    // Unpack the exploit bundle into the tempdir
+    let reader = BufReader::new(&job.exploit_bundle[..]);
+    let mut archive = tar::Archive::new(reader);
+    archive
+        .unpack(&exploit_folder)
+        .map_err(|e| Status::internal(e.to_string()))?;
 
     let config = Config::<&str> {
         image: Some("python:3.9-slim"),
@@ -339,7 +313,7 @@ async fn run_job(docker: &Docker, job: &Job) -> Result<(i32, String, String, Vec
         ..Default::default()
     };
 
-    let container_name = format!("hzrd-{}", job.id);
+    let container_name = format!("hzrd-{}", job.job_id);
 
     let options = Some(CreateContainerOptions {
         name: &container_name,
@@ -401,7 +375,7 @@ async fn run_job(docker: &Docker, job: &Job) -> Result<(i32, String, String, Vec
 
     let (stdout, stderr) = output_task.await.unwrap();
 
-    let flags = parse_flags(&stdout, &stderr, job);
+    let flags = parse_flags(&stdout, &stderr, &job);
 
     info!("Container exited with code {}", exit_code);
 

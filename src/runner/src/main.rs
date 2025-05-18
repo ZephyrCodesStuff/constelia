@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
 
     info!("Starting exploit runner service");
 
+    // TODO: Make this configurable
     let addr = SocketAddr::from(([0, 0, 0, 0], 50051));
     let runner = RunnerService::default();
 

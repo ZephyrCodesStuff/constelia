@@ -1,18 +1,23 @@
 use anyhow::Result;
 use clap::Parser;
+use futures::future::join_all;
 use std::path::Path;
 use tar::Builder;
 use tonic::Request;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+pub mod runner {
+    tonic::include_proto!("runner");
+}
+
 pub mod scheduler {
     tonic::include_proto!("scheduler");
 }
 
 use scheduler::{
-    GetExploitsRequest, GetRunnersRequest, RunExploitRequest, UploadExploitRequest,
-    scheduler_client::SchedulerClient,
+    GetExploitsRequest, GetJobResultRequest, GetJobsRequest, GetRunnersRequest, RunExploitRequest,
+    UploadExploitRequest, scheduler_client::SchedulerClient,
 };
 
 mod cli;
@@ -90,6 +95,75 @@ pub async fn list_runners(scheduler_addr: &str) -> Result<()> {
     info!("Runners: {:?}", runners);
     Ok(())
 }
+
+pub async fn stream_exploits(
+    scheduler_addr: &str,
+    exploit_name: &str,
+    count: usize,
+    target: Option<String>,
+    port: Option<u16>,
+) -> Result<()> {
+    let mut handles = Vec::new();
+    for _ in 0..count {
+        let exploit_name = exploit_name.to_string();
+        let scheduler_addr = scheduler_addr.to_string();
+        let target = target.clone();
+        let port = port.clone();
+        handles.push(tokio::spawn(async move {
+            let mut client = SchedulerClient::connect(scheduler_addr).await?;
+            let response = client
+                .run_exploit(Request::new(RunExploitRequest {
+                    exploit_name: exploit_name.clone(),
+                    // You can extend this to pass target/port if your proto supports it
+                }))
+                .await?;
+            let response = response.into_inner();
+            Ok::<_, anyhow::Error>(response)
+        }));
+    }
+    let results = join_all(handles).await;
+    for (i, res) in results.into_iter().enumerate() {
+        match res {
+            Ok(Ok(resp)) => info!("[Job {i}] Response: {:?}", resp),
+            Ok(Err(e)) => error!("[Job {i}] Error: {e}"),
+            Err(e) => error!("[Job {i}] Join error: {e}"),
+        }
+    }
+    Ok(())
+}
+
+pub async fn get_job_result(scheduler_addr: &str, job_id: &str) -> Result<()> {
+    let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
+    let response = client
+        .get_job_result(Request::new(GetJobResultRequest {
+            job_id: job_id.to_string(),
+        }))
+        .await?;
+    let response = response.into_inner();
+    info!("Job result: {:?}", response);
+    Ok(())
+}
+
+pub async fn get_jobs(scheduler_addr: &str) -> Result<()> {
+    let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
+    let response = client.get_jobs(Request::new(GetJobsRequest {})).await?;
+    let response = response.into_inner();
+
+    info!(
+        "Jobs: {:?}",
+        response
+            .jobs
+            .iter()
+            .map(|j| (
+                j.job_id.clone(),
+                j.flags.iter().map(|f| f.value.clone()).collect::<Vec<_>>()
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    Ok(())
+}
+
 // TODO: Make this configurable
 const SCHEDULER_ADDR: &str = "http://localhost:50052";
 
@@ -127,6 +201,27 @@ async fn main() -> Result<()> {
             list_runners(SCHEDULER_ADDR)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to list runners: {}", e))?;
+        }
+        cli::Action::Stream(stream) => {
+            stream_exploits(
+                SCHEDULER_ADDR,
+                &stream.exploit,
+                stream.count,
+                stream.target,
+                stream.port,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to stream exploits: {}", e))?;
+        }
+        cli::Action::Job(job) => {
+            get_job_result(SCHEDULER_ADDR, &job.job_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get job result: {}", e))?;
+        }
+        cli::Action::Jobs(_) => {
+            get_jobs(SCHEDULER_ADDR)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get jobs: {}", e))?;
         }
     }
 

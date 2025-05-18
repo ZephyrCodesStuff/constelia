@@ -436,6 +436,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures",
  "prost",
  "tar",
  "tokio",
@@ -1947,6 +1948,7 @@ dependencies = [
  "serde_json",
  "tar",
  "tokio",
+ "tokio-stream",
  "toml",
  "tonic 0.13.1",
  "tonic-build",
