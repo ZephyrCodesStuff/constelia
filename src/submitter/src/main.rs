@@ -113,7 +113,7 @@ impl Submitter for SubmitterService {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env())
         .pretty()
         .init();
 

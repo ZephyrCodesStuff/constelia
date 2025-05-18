@@ -11,7 +11,10 @@ use chrono::Utc;
 use futures::StreamExt;
 use std::{
     io::{BufReader, Write},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
 };
 use tempfile::TempDir;
 use tokio::sync::{mpsc, Semaphore};
@@ -19,25 +22,30 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
-use crate::runner::{runner_server::Runner, Flag, RunJobRequest, RunJobResponse};
+use crate::{
+    runner::{runner_server::Runner, Flag, RunJobRequest, RunJobResponse, RunnerStatus},
+    services::heartbeat,
+};
 
 #[derive(Debug)]
 pub struct RunnerService {
     docker: Docker,
     semaphore: Arc<Semaphore>,
+    status: Arc<RwLock<RunnerStatus>>,
+}
+
+impl RunnerService {
+    pub fn new(status: Arc<RwLock<RunnerStatus>>) -> Self {
+        Self {
+            docker: Docker::connect_with_local_defaults().unwrap(),
+            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
+            status,
+        }
+    }
 }
 
 // TODO: Make this configurable
 const MAX_CONCURRENT_JOBS: usize = 10;
-
-impl Default for RunnerService {
-    fn default() -> Self {
-        Self {
-            docker: Docker::connect_with_local_defaults().unwrap(),
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
-        }
-    }
-}
 
 #[tonic::async_trait]
 impl Runner for RunnerService {
@@ -47,6 +55,16 @@ impl Runner for RunnerService {
     ) -> Result<Response<RunJobResponse>, Status> {
         // Acquire a permit from the semaphore
         let _permit = self.semaphore.acquire().await;
+
+        // Set the status to running
+        let status = {
+            let mut status = self.status.write().unwrap();
+            *status = RunnerStatus::Running;
+            status.clone()
+        };
+
+        // Send a heartbeat to the scheduler
+        heartbeat::send_heartbeat(status).await.unwrap();
 
         let req = request.into_inner();
         info!("Received job request: {}", req.job_id);
@@ -179,6 +197,21 @@ impl Runner for RunnerService {
             .await
             .map_err(|e| Status::internal(format!("Docker remove_container failed: {}", e)))?;
 
+        // Set the status to completed or failed
+        let status = {
+            let mut status = self.status.write().unwrap();
+            *status = if exit_code == 0 {
+                RunnerStatus::Completed
+            } else {
+                RunnerStatus::Failed
+            };
+
+            status.clone()
+        };
+
+        // Send a heartbeat to the scheduler
+        heartbeat::send_heartbeat(status).await.unwrap();
+
         let response = RunJobResponse {
             job_id: req.job_id,
             exit_code: exit_code as i32,
@@ -186,6 +219,7 @@ impl Runner for RunnerService {
             stderr: String::from_utf8_lossy(&stderr).to_string(),
             flags: flags.into_iter().collect(),
         };
+
         Ok(Response::new(response))
     }
 
@@ -196,16 +230,34 @@ impl Runner for RunnerService {
         request: Request<tonic::Streaming<RunJobRequest>>,
     ) -> Result<Response<Self::StreamJobsStream>, Status> {
         let semaphore = self.semaphore.clone();
+        let status_lock = self.status.clone();
+
+        let status = {
+            let mut status = status_lock.write().unwrap();
+            *status = RunnerStatus::Running;
+            status.clone()
+        };
+
+        // Send a heartbeat to the scheduler
+        heartbeat::send_heartbeat(status).await.unwrap();
 
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
 
         let docker = self.docker.clone();
+
+        // Keep track of running jobs
+        let running_jobs = Arc::new(AtomicUsize::new(0));
+
         tokio::spawn(async move {
             while let Some(req) = stream.next().await {
                 let semaphore = semaphore.clone();
                 let tx = tx.clone();
                 let docker = docker.clone();
+                let running_jobs = running_jobs.clone();
+                let status_lock = status_lock.clone();
+
+                running_jobs.fetch_add(1, Ordering::SeqCst);
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await;
@@ -220,20 +272,36 @@ impl Runner for RunnerService {
                                     stderr,
                                     flags: flags.into_iter().collect(),
                                 };
+
                                 if tx.send(Ok(response)).await.is_err() {
+                                    running_jobs.fetch_sub(1, Ordering::SeqCst);
                                     return;
                                 }
                             }
                             Err(e) => {
                                 error!("Job failed: {}", e);
                                 if tx.send(Err(Status::internal(e.to_string()))).await.is_err() {
+                                    running_jobs.fetch_sub(1, Ordering::SeqCst);
                                     return;
                                 }
                             }
                         },
                         Err(e) => {
                             error!("Stream error: {}", e);
+                            running_jobs.fetch_sub(1, Ordering::SeqCst);
                             return;
+                        }
+                    }
+
+                    let remaining = running_jobs.fetch_sub(1, Ordering::SeqCst) - 1;
+                    if remaining == 0 {
+                        let status = {
+                            let mut status = status_lock.write().unwrap();
+                            *status = RunnerStatus::Idle;
+                            status.clone()
+                        };
+                        if let Err(e) = heartbeat::send_heartbeat(status).await {
+                            error!("Failed to send idle status heartbeat: {}", e);
                         }
                     }
                 });

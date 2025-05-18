@@ -5,13 +5,13 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use tonic::{Request, Response, Status};
-use tracing::debug;
+use tracing::info;
 
-use crate::services::{
-    heartbeat_proto::{heartbeat_server::Heartbeat, HeartbeatRequest, HeartbeatResponse},
-    scheduler_proto::Runner,
+use crate::services::heartbeat_proto::{
+    heartbeat_server::Heartbeat, HeartbeatRequest, HeartbeatResponse,
 };
 
+use super::runner::RunnerInfo;
 use super::scheduler::SchedulerState;
 
 #[derive(Debug, Default)]
@@ -26,17 +26,23 @@ impl Heartbeat for HeartbeatService {
         request: Request<HeartbeatRequest>,
     ) -> Result<Response<HeartbeatResponse>, Status> {
         let req = request.into_inner();
+
+        let Some(info) = req.runner_info else {
+            return Err(Status::invalid_argument("Runner info is required"));
+        };
+
         let mut state = self.state.write().unwrap();
         state.runners.insert(
-            req.runner_id.clone(),
-            Runner {
-                id: req.runner_id.clone(),
-                addr: req.runner_addr.clone(),
+            info.id.clone(),
+            RunnerInfo {
+                id: info.id.clone(),
+                addr: info.addr.clone(),
                 last_seen: Utc::now().to_rfc3339(),
+                status: info.status,
             },
         );
 
-        debug!("Runner {} is alive at {}", req.runner_id, req.timestamp);
+        info!("Runner {} sent a heartbeat: {:?}", info.id, info);
 
         Ok(Response::new(HeartbeatResponse {
             ok: true,
@@ -48,7 +54,7 @@ impl Heartbeat for HeartbeatService {
 pub const HEARTBEAT_TIMEOUT_SECS: i64 = 60;
 pub const HEARTBEAT_CHECK_INTERVAL_SECS: u64 = 10;
 
-pub fn check_runners(runners: &mut HashMap<String, Runner>) {
+pub fn check_runners(runners: &mut HashMap<String, RunnerInfo>) {
     let now = Utc::now();
     let mut to_remove = Vec::new();
     for (runner_id, runner) in runners.iter() {

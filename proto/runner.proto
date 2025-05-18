@@ -39,3 +39,17 @@ message Flag {
   string exploit_name = 3;
   string timestamp = 4;
 }
+
+enum RunnerStatus {
+  IDLE = 0;
+  RUNNING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+}
+
+message RunnerInfo {
+  string id = 1;
+  string addr = 2;
+  string last_seen = 3;
+  RunnerStatus status = 4;
+}

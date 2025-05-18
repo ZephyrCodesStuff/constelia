@@ -46,13 +46,7 @@ message RunExploitResponse {
 
 message GetRunnersRequest {}
 
-message Runner {
-  string id = 1;
-  string addr = 2;
-  string last_seen = 3;
-}
-
-message GetRunnersResponse { repeated Runner runners = 1; }
+message GetRunnersResponse { repeated runner.RunnerInfo runners = 1; }
 
 message GetJobResultRequest { string job_id = 1; }
 

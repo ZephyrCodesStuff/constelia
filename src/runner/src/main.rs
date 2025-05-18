@@ -1,7 +1,10 @@
 use anyhow::Result;
-use runner::runner_server::RunnerServer;
+use runner::{runner_server::RunnerServer, RunnerStatus};
 use services::runner::RunnerService;
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -23,7 +26,7 @@ pub mod heartbeat {
 async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env())
         .pretty()
         .init();
 
@@ -31,7 +34,6 @@ async fn main() -> Result<()> {
 
     // TODO: Make this configurable
     let addr = SocketAddr::from(([0, 0, 0, 0], 50051));
-    let runner = RunnerService::default();
 
     info!("Runner service listening on {}", addr);
 
@@ -41,7 +43,10 @@ async fn main() -> Result<()> {
         .build_v1()?;
 
     // Spawn heartbeat task
-    services::heartbeat::spawn_heartbeat_task();
+    let state = Arc::new(RwLock::new(RunnerStatus::Idle));
+    services::heartbeat::spawn_heartbeat_task(state.clone());
+
+    let runner = RunnerService::new(state.clone());
 
     Server::builder()
         .add_service(RunnerServer::new(runner))

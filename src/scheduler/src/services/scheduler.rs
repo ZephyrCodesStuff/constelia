@@ -15,10 +15,10 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use super::runner::{RunJobRequest, RunJobResponse};
+use super::runner::{RunJobRequest, RunJobResponse, RunnerInfo};
 use super::scheduler_proto::{
     GetJobResultRequest, GetJobResultResponse, GetJobsRequest, GetJobsResponse, GetRunnersRequest,
-    GetRunnersResponse, Runner,
+    GetRunnersResponse,
 };
 
 // TODO: Make this configurable
@@ -32,7 +32,7 @@ pub struct SchedulerService {
 #[derive(Debug)]
 pub struct SchedulerState {
     pub exploits: HashMap<String, PathBuf>,
-    pub runners: HashMap<String, Runner>,
+    pub runners: HashMap<String, RunnerInfo>,
     pub dispatchers: HashMap<String, mpsc::Sender<RunJobRequest>>, // runner_id -> job sender
     pub job_results: HashMap<String, Option<RunJobResponse>>, // job_id -> result (None if not finished)
 }
@@ -80,7 +80,7 @@ impl Default for SchedulerState {
 
 impl SchedulerService {
     // Call this when a new runner is registered (e.g., in heartbeat or at startup)
-    pub async fn ensure_dispatcher(&self, runner: &Runner) {
+    pub async fn ensure_dispatcher(&self, runner: &RunnerInfo) {
         let mut state = self.state.write().unwrap();
         if !state.dispatchers.contains_key(&runner.id) {
             let (tx, rx) = mpsc::channel::<RunJobRequest>(100);
@@ -197,7 +197,7 @@ impl Scheduler for SchedulerService {
         dispatchers
             .send(request)
             .await
-            .map_err(|_| Status::internal("Failed to send job to runner"))?;
+            .map_err(|e| Status::internal(format!("Failed to send job to runner: {}", e)))?;
 
         Ok(Response::new(RunExploitResponse {
             ok: true,

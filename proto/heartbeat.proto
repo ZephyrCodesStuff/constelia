@@ -1,16 +1,14 @@
 syntax = "proto3";
 package heartbeat;
 
+import "runner.proto";
+
 service Heartbeat {
   // Runner sends a heartbeat to indicate it is alive
   rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 }
 
-message HeartbeatRequest {
-  string runner_id = 1;
-  string timestamp = 2;
-  string runner_addr = 3;
-}
+message HeartbeatRequest { runner.RunnerInfo runner_info = 1; }
 
 message HeartbeatResponse {
   bool ok = 1;
