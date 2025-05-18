@@ -6,6 +6,7 @@ use services::{
     scheduler::{SchedulerService, SchedulerState},
     scheduler_proto,
 };
+use tonic_web::GrpcWebLayer;
 use std::{
     net::SocketAddr, sync::{Arc, RwLock}, time::Duration
 };
@@ -72,6 +73,8 @@ async fn main() -> Result<()> {
     info!("Scheduler server started on {}", addr);
 
     Server::builder()
+        .accept_http1(true)
+        .layer(GrpcWebLayer::new())
         .add_service(HeartbeatServer::new(heartbeat_service))
         .add_service(SchedulerServer::new(scheduler_service))
         .add_service(reflection_service)

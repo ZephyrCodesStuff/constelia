@@ -1,3 +1,4 @@
 /target
 **/exploits
 **/config.toml
+.env

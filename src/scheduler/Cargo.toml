@@ -23,6 +23,7 @@ flate2 = { workspace = true }
 tokio-stream = { workspace = true }
 dotenv = { workspace = true }
 figment = { workspace = true }
+tonic-web = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.13.1"
