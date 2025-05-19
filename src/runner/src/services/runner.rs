@@ -1,7 +1,14 @@
 use anyhow::Result;
+use async_nats::jetstream::{
+    self,
+    consumer::PullConsumer,
+    consumer::{pull::Config as JetStreamPullConfig, AckPolicy},
+    Context as JetStreamContext,
+};
 use bollard::{
     container::{
-        AttachContainerOptions, Config as ContainerConfig, CreateContainerOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions
+        AttachContainerOptions, Config as ContainerConfig, CreateContainerOptions,
+        RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
     },
     image::CreateImageOptions,
     secret::HostConfig,
@@ -9,23 +16,28 @@ use bollard::{
 };
 use chrono::Utc;
 use futures::StreamExt;
+use prost::{bytes::Bytes, Message};
 use std::{
     io::BufReader,
+    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, RwLock,
     },
-    path::Path,
 };
 use tempfile::TempDir;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
+use uuid;
 
 use crate::{
     config::Config,
-    runner::{runner_server::Runner, Flag, RunJobRequest, RunJobResponse, RunnerStatus},
+    runner::{
+        runner_server::Runner, Flag, Job, JobResult, PullJobsRequest, PullJobsResponse,
+        RunJobResponse, RunnerStatus, Status as JobStatus,
+    },
     services::heartbeat,
 };
 
@@ -35,16 +47,32 @@ pub struct RunnerService {
     semaphore: Arc<Semaphore>,
     config: Config,
     status: Arc<RwLock<RunnerStatus>>,
+    jetstream: JetStreamContext,
+    consumer: Arc<PullConsumer>,
 }
 
 impl RunnerService {
-    pub fn new(config: Config, status: Arc<RwLock<RunnerStatus>>) -> Self {
-        Self {
+    pub async fn try_new(config: Config, status: Arc<RwLock<RunnerStatus>>) -> Result<Self> {
+        let nats = async_nats::connect("nats://localhost:4222").await?;
+        let jetstream = jetstream::new(nats);
+        let consumer = jetstream
+            .create_consumer_on_stream(
+                JetStreamPullConfig {
+                    durable_name: Some(format!("runner-{}", config.runner.id)),
+                    ack_policy: AckPolicy::Explicit,
+                    ..Default::default()
+                },
+                "jobs",
+            )
+            .await?;
+        Ok(Self {
             docker: Docker::connect_with_local_defaults().unwrap(),
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
             config,
             status,
-        }
+            jetstream,
+            consumer: Arc::new(consumer),
+        })
     }
 }
 
@@ -55,20 +83,32 @@ const IMAGE_TAG: &str = "3.12-slim";
 
 async fn run_job_internal(
     docker: &Docker,
-    req: &RunJobRequest,
+    req: &Job,
     exploit_folder: &Path,
 ) -> Result<(i32, String, String, Vec<Flag>), Status> {
     let target = req.target.as_ref().expect("Target is required");
 
-    let image = docker.create_image(Some(CreateImageOptions::<&str> {
-        from_image: IMAGE_NAME,
-        tag: IMAGE_TAG,
-        ..Default::default()
-    }), None, None).next().await.unwrap().unwrap();
+    let image = docker
+        .create_image(
+            Some(CreateImageOptions::<&str> {
+                from_image: IMAGE_NAME,
+                tag: IMAGE_TAG,
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
+        .next()
+        .await
+        .unwrap()
+        .unwrap();
 
     if let Some(error) = image.error {
         error!("Failed to create image: {}", error);
-        return Err(Status::internal(format!("Failed to create image: {}", error)));
+        return Err(Status::internal(format!(
+            "Failed to create image: {}",
+            error
+        )));
     }
 
     let env = vec![
@@ -76,11 +116,15 @@ async fn run_job_internal(
         format!("TARGET_PORT={}", target.port),
     ];
 
-    let container_name = format!("exploit-{}", req.job_id);
+    let unique = uuid::Uuid::new_v4();
+    let container_name = format!("exploit-{}-{}", req.job_id, unique);
     let container_config = ContainerConfig {
         image: Some(format!("{}:{}", IMAGE_NAME, IMAGE_TAG)),
         working_dir: Some("/app".to_string()),
-        entrypoint: Some(vec!["/bin/bash".to_string(), "/app/docker-entrypoint.sh".to_string()]),
+        entrypoint: Some(vec![
+            "/bin/bash".to_string(),
+            "/app/docker-entrypoint.sh".to_string(),
+        ]),
         env: Some(env),
         host_config: Some(HostConfig {
             binds: Some(vec![format!("{}:/app", exploit_folder.display())]),
@@ -92,7 +136,10 @@ async fn run_job_internal(
 
     info!("Starting container with config: {:?}", container_config);
 
-    #[allow(unused_variables, reason = "This returns something, but we don't really need it and we're already checking for errors")]
+    #[allow(
+        unused_variables,
+        reason = "This returns something, but we don't really need it and we're already checking for errors"
+    )]
     let container = docker
         .create_container(
             Some(CreateContainerOptions {
@@ -166,22 +213,26 @@ async fn run_job_internal(
 
     let flags = parse_flags(&stdout, &stderr, req);
 
-    Ok((exit_code, String::from_utf8_lossy(&stdout).to_string(), String::from_utf8_lossy(&stderr).to_string(), flags))
+    Ok((
+        exit_code,
+        String::from_utf8_lossy(&stdout).to_string(),
+        String::from_utf8_lossy(&stderr).to_string(),
+        flags,
+    ))
 }
 
 #[tonic::async_trait]
 impl Runner for RunnerService {
-    async fn run_job(
+    async fn pull_jobs(
         &self,
-        request: Request<RunJobRequest>,
-    ) -> Result<Response<RunJobResponse>, Status> {
-        // Acquire a permit from the semaphore
+        _request: Request<PullJobsRequest>,
+    ) -> Result<Response<PullJobsResponse>, Status> {
         let _permit = self.semaphore.acquire().await;
 
         // Set the status to running
         let status = {
             let mut status = self.status.write().unwrap();
-            *status = RunnerStatus::Running;
+            *status = RunnerStatus::RunnerRunning;
             status.clone()
         };
 
@@ -190,62 +241,127 @@ impl Runner for RunnerService {
             .await
             .unwrap();
 
-        let req = request.into_inner();
-        info!("Received job request: {}", req.job_id);
+        info!("Runner is pulling jobs from JetStream");
 
-        let tempdir = TempDir::new()
-            .map_err(|e| Status::internal(format!("Failed to create tempdir: {}", e)))?;
-        let exploit_folder = tempdir.path();
-
-        if req.exploit_name.is_empty() {
-            return Err(Status::invalid_argument("Exploit name is required"));
-        }
-
-        if req.exploit_bundle.is_empty() {
-            return Err(Status::invalid_argument("Exploit bundle is required"));
-        }
-
-        let reader = BufReader::new(&req.exploit_bundle[..]);
-        let mut archive = tar::Archive::new(reader);
-        archive
-            .unpack(&exploit_folder)
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let (exit_code, stdout, stderr, flags) = run_job_internal(&self.docker, &req, exploit_folder).await?;
-
-        // Set the status to completed or failed
-        let status = {
-            let mut status = self.status.write().unwrap();
-            *status = if exit_code == 0 {
-                RunnerStatus::Completed
-            } else {
-                RunnerStatus::Failed
-            };
-
-            status.clone()
-        };
-
-        // Send a heartbeat to the scheduler
-        heartbeat::send_heartbeat(&self.config, status)
+        // Use the stored consumer
+        let mut messages = self
+            .consumer
+            .fetch()
+            .max_messages(self.config.runner.max_parallel_jobs as usize)
+            .messages()
             .await
-            .unwrap();
+            .map_err(|e| Status::internal(format!("Failed to fetch jobs: {}", e)))?;
 
-        let response = RunJobResponse {
-            job_id: req.job_id,
-            exit_code: exit_code as i32,
-            stdout,
-            stderr,
-            flags: flags.into_iter().collect(),
-        };
+        // Process all available jobs in parallel
+        let mut handles = Vec::new();
 
-        Ok(Response::new(response))
+        while let Some(Ok(msg)) = messages.next().await {
+            let docker = self.docker.clone();
+            let config = self.config.clone();
+            let jetstream = self.jetstream.clone();
+            let status = self.status.clone();
+
+            let handle = tokio::spawn(async move {
+                let job = match Job::decode(&*msg.payload) {
+                    Ok(job) => job,
+                    Err(e) => {
+                        error!("Failed to decode job: {}", e);
+                        msg.ack().await.ok();
+                        return Err(Status::internal(format!("Failed to decode job: {}", e)));
+                    }
+                };
+
+                // Prepare exploit folder
+                let tempdir = TempDir::new()
+                    .map_err(|e| Status::internal(format!("Failed to create tempdir: {}", e)))?;
+                let exploit_folder = tempdir.path();
+
+                if job.exploit_name.is_empty() {
+                    msg.ack().await.ok();
+                    return Err(Status::invalid_argument("Exploit name is required"));
+                }
+
+                if job.exploit_bundle.is_empty() {
+                    msg.ack().await.ok();
+                    return Err(Status::invalid_argument("Exploit bundle is required"));
+                }
+
+                let reader = BufReader::new(&job.exploit_bundle[..]);
+                let mut archive = tar::Archive::new(reader);
+                archive
+                    .unpack(&exploit_folder)
+                    .map_err(|e| Status::internal(e.to_string()))?;
+
+                let (exit_code, stdout, stderr, flags) = run_job_internal(
+                    &docker,
+                    &Job {
+                        job_id: job.job_id.clone(),
+                        exploit_name: job.exploit_name.clone(),
+                        target: job.target.clone(),
+                        flag_regex: job.flag_regex.clone(),
+                        exploit_bundle: job.exploit_bundle.clone(),
+                        status: JobStatus::JobPending.into(),
+                    },
+                    exploit_folder,
+                )
+                .await?;
+
+                // Set the status to completed or failed
+                let status = {
+                    let mut status = status.write().unwrap();
+                    *status = if exit_code == 0 {
+                        RunnerStatus::RunnerCompleted
+                    } else {
+                        RunnerStatus::RunnerFailed
+                    };
+                    status.clone()
+                };
+
+                // Send a heartbeat to the scheduler
+                heartbeat::send_heartbeat(&config, status).await.unwrap();
+
+                // Publish the result to `results`
+                let result = JobResult {
+                    job_id: job.job_id.clone(),
+                    exit_code,
+                    stdout,
+                    stderr,
+                    flags,
+                    timestamp: Utc::now().to_rfc3339(),
+                };
+
+                jetstream
+                    .publish("results", Bytes::from(result.encode_to_vec()))
+                    .await
+                    .map_err(|e| Status::internal(format!("Failed to publish result: {}", e)))?;
+
+                // Acknowledge the job
+                msg.ack()
+                    .await
+                    .map_err(|e| Status::internal(format!("Failed to acknowledge job: {}", e)))?;
+
+                Ok::<_, Status>(())
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all jobs to complete
+        for handle in handles {
+            if let Err(e) = handle.await.unwrap() {
+                error!("Job failed: {}", e);
+            }
+        }
+
+        // No jobs available
+        Ok(Response::new(PullJobsResponse { jobs: vec![] }))
     }
 
     type StreamJobsStream = ReceiverStream<Result<RunJobResponse, Status>>;
 
     async fn stream_jobs(
         &self,
-        request: Request<tonic::Streaming<RunJobRequest>>,
+        request: Request<tonic::Streaming<Job>>,
     ) -> Result<Response<Self::StreamJobsStream>, Status> {
         let semaphore = self.semaphore.clone();
         let status_lock = self.status.clone();
@@ -253,7 +369,7 @@ impl Runner for RunnerService {
 
         let status = {
             let mut status = status_lock.write().unwrap();
-            *status = RunnerStatus::Running;
+            *status = RunnerStatus::RunnerRunning;
             status.clone()
         };
 
@@ -334,7 +450,8 @@ impl Runner for RunnerService {
                                 }
                                 Err(e) => {
                                     error!("Job failed: {}", e);
-                                    if tx.send(Err(Status::internal(e.to_string()))).await.is_err() {
+                                    if tx.send(Err(Status::internal(e.to_string()))).await.is_err()
+                                    {
                                         running_jobs.fetch_sub(1, Ordering::SeqCst);
                                         return;
                                     }
@@ -352,7 +469,7 @@ impl Runner for RunnerService {
                     if remaining == 0 {
                         let status = {
                             let mut status = status_lock.write().unwrap();
-                            *status = RunnerStatus::Idle;
+                            *status = RunnerStatus::RunnerIdle;
                             status.clone()
                         };
                         if let Err(e) = heartbeat::send_heartbeat(&config, status).await {
@@ -367,7 +484,7 @@ impl Runner for RunnerService {
     }
 }
 
-fn parse_flags(stdout: &[u8], stderr: &[u8], job: &RunJobRequest) -> Vec<Flag> {
+fn parse_flags(stdout: &[u8], stderr: &[u8], job: &Job) -> Vec<Flag> {
     let mut flags = Vec::new();
     let flag_pattern = regex::Regex::new(&job.flag_regex).unwrap();
 

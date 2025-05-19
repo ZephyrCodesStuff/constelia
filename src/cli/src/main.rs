@@ -17,7 +17,7 @@ pub mod scheduler {
 
 use scheduler::{
     GetExploitsRequest, GetJobResultRequest, GetJobsRequest, GetRunnersRequest, GetTargetsRequest,
-    RunExploitRequest, UploadExploitRequest, scheduler_client::SchedulerClient,
+    PollRunnersRequest, RunExploitRequest, UploadExploitRequest, scheduler_client::SchedulerClient,
 };
 
 mod cli;
@@ -68,7 +68,9 @@ pub async fn list_exploits(scheduler_addr: &str) -> Result<()> {
 
 pub async fn list_targets(scheduler_addr: &str) -> Result<()> {
     let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
-    let response = client.get_targets(Request::new(GetTargetsRequest {})).await?;
+    let response = client
+        .get_targets(Request::new(GetTargetsRequest {}))
+        .await?;
     let targets = response.into_inner().targets;
 
     info!("Targets: {:?}", targets);
@@ -158,18 +160,18 @@ pub async fn get_jobs(scheduler_addr: &str) -> Result<()> {
     let response = client.get_jobs(Request::new(GetJobsRequest {})).await?;
     let response = response.into_inner();
 
-    info!(
-        "Jobs: {:?}",
-        response
-            .jobs
-            .iter()
-            .map(|j| (
-                j.job_id.clone(),
-                j.flags.iter().map(|f| f.value.clone()).collect::<Vec<_>>()
-            ))
-            .collect::<Vec<_>>()
-    );
+    info!("Jobs: {:?}", response.jobs);
 
+    Ok(())
+}
+
+pub async fn pull_jobs(scheduler_addr: &str) -> Result<()> {
+    let mut client = SchedulerClient::connect(scheduler_addr.to_string()).await?;
+    let response = client
+        .poll_runners(Request::new(PollRunnersRequest {}))
+        .await?;
+    let response = response.into_inner();
+    info!("Pulled jobs: {:?}", response.runners);
     Ok(())
 }
 
@@ -235,6 +237,11 @@ async fn main() -> Result<()> {
             get_jobs(SCHEDULER_ADDR)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get jobs: {}", e))?;
+        }
+        cli::Action::Pull(_) => {
+            pull_jobs(SCHEDULER_ADDR)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to pull jobs: {}", e))?;
         }
     }
 

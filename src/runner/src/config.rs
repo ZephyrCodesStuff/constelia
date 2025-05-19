@@ -21,7 +21,10 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self { host: Ipv4Addr::new(127, 0, 0, 1), port: 50052 }
+        Self {
+            host: Ipv4Addr::new(127, 0, 0, 1),
+            port: 50052,
+        }
     }
 }
 
@@ -35,11 +38,21 @@ pub struct RunnerConfig {
 
     /// Port to listen on for incoming connections from the scheduler
     pub port: u16,
+
+    /// Maximum number of jobs to run in parallel
+    ///
+    /// Configure this based on your runner's resources.
+    pub max_parallel_jobs: u32,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
-        Self { id: "runner-1".to_string(), host: Ipv4Addr::new(127, 0, 0, 1), port: 50051 }
+        Self {
+            id: "runner-1".to_string(),
+            host: Ipv4Addr::new(127, 0, 0, 1),
+            port: 50051,
+            max_parallel_jobs: 5,
+        }
     }
 }
 

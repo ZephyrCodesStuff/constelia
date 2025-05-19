@@ -24,6 +24,9 @@ service Scheduler {
 
   // GetJobs returns a list of all jobs
   rpc GetJobs(GetJobsRequest) returns (GetJobsResponse);
+
+  // PollRunners tells all available runners to pull jobs from the scheduler
+  rpc PollRunners(PollRunnersRequest) returns (PollRunnersResponse);
 }
 
 message UploadExploitRequest {
@@ -67,4 +70,8 @@ message GetJobResultResponse {
 
 message GetJobsRequest {}
 
-message GetJobsResponse { repeated runner.RunJobResponse jobs = 1; }
+message GetJobsResponse { repeated runner.Job jobs = 1; }
+
+message PollRunnersRequest {}
+
+message PollRunnersResponse { repeated runner.RunnerInfo runners = 1; }

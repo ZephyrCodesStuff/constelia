@@ -24,6 +24,8 @@ flate2 = { workspace = true }
 tempfile = { workspace = true }
 dotenv = { workspace = true }
 figment = { workspace = true }
+async-nats = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.13.1"

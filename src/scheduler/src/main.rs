@@ -6,19 +6,21 @@ use services::{
     scheduler::{SchedulerService, SchedulerState},
     scheduler_proto,
 };
-use tonic_web::GrpcWebLayer;
 use std::{
-    net::SocketAddr, sync::{Arc, RwLock}, time::Duration
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+    time::Duration,
 };
 use tonic::transport::Server;
+use tonic_web::GrpcWebLayer;
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 use heartbeat_proto::heartbeat_server::HeartbeatServer;
 use scheduler_proto::scheduler_server::SchedulerServer;
 
-mod services;
 mod config;
+mod services;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,13 +37,14 @@ async fn main() -> Result<()> {
     // Start Heartbeat gRPC server
     let addr = SocketAddr::from((config.server.host, config.server.port));
 
-    let state = SchedulerState::new(&config);
+    let state = SchedulerState::try_new(&config).await?;
     let state_arc = Arc::new(RwLock::new(state));
 
     let heartbeat_service = HeartbeatService {
         config: config.heartbeat,
         state: state_arc.clone(),
     };
+
     let scheduler_service = SchedulerService {
         submitter: config.submitter,
         state: state_arc,

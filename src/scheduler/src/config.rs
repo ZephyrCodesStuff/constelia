@@ -1,6 +1,9 @@
 use std::net::Ipv4Addr;
 
-use figment::{Figment, providers::{Env, Format, Toml}};
+use figment::{
+    providers::{Env, Format, Toml},
+    Figment,
+};
 use serde::Deserialize;
 
 use crate::services::runner::Target as RunnerTarget;
@@ -10,6 +13,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub heartbeat: HeartbeatConfig,
     pub submitter: SubmitterConfig,
+    pub nats: NatsConfig,
 
     #[serde(default)]
     pub targets: Vec<Target>,
@@ -23,7 +27,10 @@ pub struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { host: Ipv4Addr::new(0, 0, 0, 0), port: 50052 }
+        Self {
+            host: Ipv4Addr::new(0, 0, 0, 0),
+            port: 50052,
+        }
     }
 }
 
@@ -48,14 +55,19 @@ pub struct SubmitterConfig {
     pub port: u16,
 
     /// Regex to match flags
-    /// 
+    ///
     /// Even if the submitter is disabled, this regex is used to validate flags
     pub flag_regex: String,
 }
 
 impl Default for SubmitterConfig {
     fn default() -> Self {
-        Self { enabled: false, host: Ipv4Addr::new(0, 0, 0, 0), port: 50053, flag_regex: "[A-Z0-9]{31}=".to_string() }
+        Self {
+            enabled: false,
+            host: Ipv4Addr::new(0, 0, 0, 0),
+            port: 50053,
+            flag_regex: "[A-Z0-9]{31}=".to_string(),
+        }
     }
 }
 
@@ -76,7 +88,24 @@ pub struct Target {
 // Boilerplate to avoid implementing `Deserialize` for `RunnerTarget`
 impl From<Target> for RunnerTarget {
     fn from(target: Target) -> Self {
-        RunnerTarget { id: target.id, host: target.host.to_string(), port: target.port as u32 }
+        RunnerTarget {
+            id: target.id,
+            host: target.host.to_string(),
+            port: target.port as u32,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NatsConfig {
+    pub url: String,
+}
+
+impl Default for NatsConfig {
+    fn default() -> Self {
+        Self {
+            url: "nats://localhost:4222".to_string(),
+        }
     }
 }
 
@@ -89,5 +118,3 @@ impl Config {
             .extract()
     }
 }
-
-

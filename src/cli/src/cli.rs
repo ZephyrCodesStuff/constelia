@@ -10,14 +10,33 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Upload an exploit
     Upload(Upload),
+
+    /// List exploits
     List(List),
+
+    /// List targets
     Targets(Targets),
+
+    /// Run an exploit
+    /// TODO: change this to `Enqueue`
     Run(Run),
+
+    /// List runners
     Runners(Runners),
+
+    /// Run jobs as a stream
     Stream(Stream),
+
+    /// Get a job's result
     Job(Job),
+
+    /// List jobs
     Jobs(Jobs),
+
+    /// Ask runners to pull jobs
+    Pull(Pull),
 }
 
 #[derive(Debug, Parser)]
@@ -55,7 +74,7 @@ pub struct Stream {
     /// Name of the exploit to run
     #[clap(short, long)]
     pub exploit: String,
-    
+
     /// Number of jobs to run in parallel
     #[clap(short, long, default_value = "5")]
     pub count: usize,
@@ -74,3 +93,6 @@ pub struct Job {
 
 #[derive(Debug, Parser)]
 pub struct Jobs {}
+
+#[derive(Debug, Parser)]
+pub struct Pull {}

@@ -45,13 +45,13 @@ async fn main() -> Result<()> {
         .register_encoded_file_descriptor_set(heartbeat::FILE_DESCRIPTOR_SET)
         .build_v1()?;
 
-    let state = Arc::new(RwLock::new(RunnerStatus::Idle));
+    let state = Arc::new(RwLock::new(RunnerStatus::RunnerIdle));
     let config = config::Config::new()?;
 
     // Spawn heartbeat task
     services::heartbeat::spawn_heartbeat_task(config.clone(), state.clone());
 
-    let runner = RunnerService::new(config, state.clone());
+    let runner = RunnerService::try_new(config, state.clone()).await?;
 
     Server::builder()
         .add_service(RunnerServer::new(runner))

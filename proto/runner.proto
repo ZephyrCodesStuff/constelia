@@ -2,19 +2,42 @@ syntax = "proto3";
 package runner;
 
 service Runner {
-  // RunJob executes a single job and returns the result
-  rpc RunJob(RunJobRequest) returns (RunJobResponse);
+  // PullJobs fetches a list of jobs from the runner
+  rpc PullJobs(PullJobsRequest) returns (PullJobsResponse);
 
   // StreamJobs receives a stream of jobs and returns a stream of results
-  rpc StreamJobs(stream RunJobRequest) returns (stream RunJobResponse);
+  rpc StreamJobs(stream Job) returns (stream RunJobResponse);
 }
 
-message RunJobRequest {
+message PullJobsRequest {}
+
+message PullJobsResponse { repeated Job jobs = 1; }
+
+message Job {
   string job_id = 1;
   Target target = 2;
   string exploit_name = 3;
   string flag_regex = 4;
   bytes exploit_bundle = 5;
+
+  /// Status of the job (i.e. pending, running, completed, failed)
+  Status status = 6;
+}
+
+enum Status {
+  JOB_PENDING = 0;
+  JOB_RUNNING = 1;
+  JOB_COMPLETED = 2;
+  JOB_FAILED = 3;
+}
+
+message JobResult {
+  string job_id = 1;
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+  repeated Flag flags = 5;
+  string timestamp = 6;
 }
 
 message Target {
@@ -55,10 +78,10 @@ message Flag {
 }
 
 enum RunnerStatus {
-  IDLE = 0;
-  RUNNING = 1;
-  COMPLETED = 2;
-  FAILED = 3;
+  RUNNER_IDLE = 0;
+  RUNNER_RUNNING = 1;
+  RUNNER_COMPLETED = 2;
+  RUNNER_FAILED = 3;
 }
 
 message RunnerInfo {

@@ -7,14 +7,15 @@ use chrono::{DateTime, Utc};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
-use crate::{config::HeartbeatConfig, services::heartbeat_proto::{
-    heartbeat_server::Heartbeat, HeartbeatRequest, HeartbeatResponse,
-}};
+use crate::{
+    config::HeartbeatConfig,
+    services::heartbeat_proto::{heartbeat_server::Heartbeat, HeartbeatRequest, HeartbeatResponse},
+};
 
 use super::runner::RunnerInfo;
 use super::scheduler::SchedulerState;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HeartbeatService {
     pub config: HeartbeatConfig,
     pub state: Arc<RwLock<SchedulerState>>,
