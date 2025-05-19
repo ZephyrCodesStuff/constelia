@@ -1,6 +1,6 @@
-# Hzrd - Distributed CTF Attack System
+# `constelia` - Distributed CTF Attack System
 
-Hzrd is a distributed system for running CTF exploits against multiple targets and submitting flags to a CTFd-compatible API.
+`constelia` is a distributed system for running CTF exploits against multiple targets and submitting flags to a CTFd-compatible API.
 
 ## Components
 
