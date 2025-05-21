@@ -2278,6 +2278,7 @@ dependencies = [
  "dotenv",
  "figment",
  "flate2",
+ "futures",
  "prost",
  "serde",
  "serde_json",

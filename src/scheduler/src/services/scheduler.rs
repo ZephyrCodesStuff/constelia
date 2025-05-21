@@ -15,10 +15,11 @@ use prost::Message;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::Duration;
 use std::{fs, sync::Arc};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{error, info};
 use uuid::Uuid;
 
 use super::runner::runner_client::RunnerClient;
@@ -87,6 +88,20 @@ impl SchedulerState {
             })
             .await
             .map_err(|e| Status::internal(format!("Failed to create JetStream stream: {}", e)))?;
+
+        // Create a `runner-shared` consumer for the `jobs` stream
+        let _ = jetstream
+            .create_consumer_on_stream(
+                JetStreamPullConfig {
+                    durable_name: Some("runner-shared".to_string()),
+                    ack_policy: AckPolicy::Explicit,
+                    ack_wait: Duration::from_secs(10),
+                    ..Default::default()
+                },
+                "jobs",
+            )
+            .await?;
+
         Ok(Self {
             exploits,
             runners: HashMap::new(),
@@ -268,18 +283,36 @@ impl Scheduler for SchedulerService {
         };
         // Now drop the lock before any .await
 
-        for runner in &runners {
-            let request = PullJobsRequest {};
-            let mut client = RunnerClient::connect(runner.addr.clone())
-                .await
-                .map_err(|e| Status::internal(format!("Failed to connect to runner: {}", e)))?;
+        let mut handles = Vec::new();
 
-            let response = client.pull_jobs(request).await.unwrap();
-            let response = response.into_inner();
-            for job in response.jobs {
-                info!("Runner {} pulled job: {:?}", runner.id, job);
-            }
+        for runner in &runners {
+            let runner = runner.clone();
+            let handle = tokio::spawn(async move {
+                let request = PullJobsRequest {};
+                let mut client = match RunnerClient::connect(runner.addr.clone()).await {
+                    Ok(client) => client,
+                    Err(e) => {
+                        error!("Failed to connect to runner {}: {}", runner.id, e);
+                        return;
+                    }
+                };
+
+                match client.pull_jobs(request).await {
+                    Ok(response) => {
+                        let response = response.into_inner();
+                        for job in response.jobs {
+                            info!("Runner {} pulled job: {:?}", runner.id, job);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to pull jobs from runner {}: {}", runner.id, e);
+                    }
+                }
+            });
+            handles.push(handle);
         }
+        // Wait for all pulls to complete
+        futures::future::join_all(handles).await;
 
         Ok(Response::new(PollRunnersResponse {
             runners: runners.into_iter().map(|r| r.into()).collect(),

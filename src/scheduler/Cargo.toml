@@ -25,6 +25,7 @@ dotenv = { workspace = true }
 figment = { workspace = true }
 tonic-web = { workspace = true }
 async-nats = { workspace = true }
+futures.workspace = true
 
 [build-dependencies]
 tonic-build = "0.13.1"

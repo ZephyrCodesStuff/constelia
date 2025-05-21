@@ -43,6 +43,9 @@ pub struct RunnerConfig {
     ///
     /// Configure this based on your runner's resources.
     pub max_parallel_jobs: u32,
+
+    /// Docker image to use for the runner
+    pub docker_image: String,
 }
 
 impl Default for RunnerConfig {
@@ -52,6 +55,7 @@ impl Default for RunnerConfig {
             host: Ipv4Addr::new(127, 0, 0, 1),
             port: 50051,
             max_parallel_jobs: 5,
+            docker_image: "python:3.13-alpine".to_string(),
         }
     }
 }

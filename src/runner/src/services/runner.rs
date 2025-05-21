@@ -10,7 +10,6 @@ use bollard::{
         AttachContainerOptions, Config as ContainerConfig, CreateContainerOptions,
         RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
     },
-    image::CreateImageOptions,
     secret::HostConfig,
     Docker,
 };
@@ -24,6 +23,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, RwLock,
     },
+    time::Duration,
 };
 use tempfile::TempDir;
 use tokio::sync::{mpsc, Semaphore};
@@ -53,21 +53,17 @@ pub struct RunnerService {
 
 impl RunnerService {
     pub async fn try_new(config: Config, status: Arc<RwLock<RunnerStatus>>) -> Result<Self> {
-        let nats = async_nats::connect("nats://localhost:4222").await?;
+        let nats_url = format!("nats://{}:4222", config.scheduler.host);
+        let nats = async_nats::connect(nats_url).await?;
         let jetstream = jetstream::new(nats);
+
         let consumer = jetstream
-            .create_consumer_on_stream(
-                JetStreamPullConfig {
-                    durable_name: Some(format!("runner-{}", config.runner.id)),
-                    ack_policy: AckPolicy::Explicit,
-                    ..Default::default()
-                },
-                "jobs",
-            )
+            .get_consumer_from_stream("runner-shared", "jobs")
             .await?;
+
         Ok(Self {
             docker: Docker::connect_with_local_defaults().unwrap(),
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
+            semaphore: Arc::new(Semaphore::new(config.runner.max_parallel_jobs as usize)),
             config,
             status,
             jetstream,
@@ -76,40 +72,13 @@ impl RunnerService {
     }
 }
 
-// TODO: Make this configurable
-const MAX_CONCURRENT_JOBS: usize = 10;
-const IMAGE_NAME: &str = "python";
-const IMAGE_TAG: &str = "3.12-slim";
-
 async fn run_job_internal(
     docker: &Docker,
+    config: &Config,
     req: &Job,
     exploit_folder: &Path,
 ) -> Result<(i32, String, String, Vec<Flag>), Status> {
     let target = req.target.as_ref().expect("Target is required");
-
-    let image = docker
-        .create_image(
-            Some(CreateImageOptions::<&str> {
-                from_image: IMAGE_NAME,
-                tag: IMAGE_TAG,
-                ..Default::default()
-            }),
-            None,
-            None,
-        )
-        .next()
-        .await
-        .unwrap()
-        .unwrap();
-
-    if let Some(error) = image.error {
-        error!("Failed to create image: {}", error);
-        return Err(Status::internal(format!(
-            "Failed to create image: {}",
-            error
-        )));
-    }
 
     let env = vec![
         format!("TARGET_HOST={}", target.host),
@@ -119,10 +88,10 @@ async fn run_job_internal(
     let unique = uuid::Uuid::new_v4();
     let container_name = format!("exploit-{}-{}", req.job_id, unique);
     let container_config = ContainerConfig {
-        image: Some(format!("{}:{}", IMAGE_NAME, IMAGE_TAG)),
+        image: Some(config.runner.docker_image.clone()),
         working_dir: Some("/app".to_string()),
         entrypoint: Some(vec![
-            "/bin/bash".to_string(),
+            "/bin/sh".to_string(),
             "/app/docker-entrypoint.sh".to_string(),
         ]),
         env: Some(env),
@@ -227,8 +196,6 @@ impl Runner for RunnerService {
         &self,
         _request: Request<PullJobsRequest>,
     ) -> Result<Response<PullJobsResponse>, Status> {
-        let _permit = self.semaphore.acquire().await;
-
         // Set the status to running
         let status = {
             let mut status = self.status.write().unwrap();
@@ -241,7 +208,10 @@ impl Runner for RunnerService {
             .await
             .unwrap();
 
-        info!("Runner is pulling jobs from JetStream");
+        let available = self.semaphore.available_permits();
+        if available == 0 {
+            return Ok(Response::new(PullJobsResponse { jobs: vec![] }));
+        }
 
         // Use the stored consumer
         let mut messages = self
@@ -256,6 +226,8 @@ impl Runner for RunnerService {
         let mut handles = Vec::new();
 
         while let Some(Ok(msg)) = messages.next().await {
+            let _permit = self.semaphore.acquire().await;
+
             let docker = self.docker.clone();
             let config = self.config.clone();
             let jetstream = self.jetstream.clone();
@@ -294,6 +266,7 @@ impl Runner for RunnerService {
 
                 let (exit_code, stdout, stderr, flags) = run_job_internal(
                     &docker,
+                    &config,
                     &Job {
                         job_id: job.job_id.clone(),
                         exploit_name: job.exploit_name.clone(),
@@ -320,21 +293,6 @@ impl Runner for RunnerService {
                 // Send a heartbeat to the scheduler
                 heartbeat::send_heartbeat(&config, status).await.unwrap();
 
-                // Publish the result to `results`
-                let result = JobResult {
-                    job_id: job.job_id.clone(),
-                    exit_code,
-                    stdout,
-                    stderr,
-                    flags,
-                    timestamp: Utc::now().to_rfc3339(),
-                };
-
-                jetstream
-                    .publish("results", Bytes::from(result.encode_to_vec()))
-                    .await
-                    .map_err(|e| Status::internal(format!("Failed to publish result: {}", e)))?;
-
                 // Acknowledge the job
                 msg.ack()
                     .await
@@ -347,11 +305,10 @@ impl Runner for RunnerService {
         }
 
         // Wait for all jobs to complete
-        for handle in handles {
-            if let Err(e) = handle.await.unwrap() {
-                error!("Job failed: {}", e);
-            }
-        }
+        let job_count = handles.len();
+        futures::future::join_all(handles).await;
+
+        info!("Finished running {} jobs", job_count);
 
         // No jobs available
         Ok(Response::new(PullJobsResponse { jobs: vec![] }))
@@ -433,7 +390,7 @@ impl Runner for RunnerService {
                                 return;
                             }
 
-                            match run_job_internal(&docker, &req, exploit_folder).await {
+                            match run_job_internal(&docker, &config, &req, exploit_folder).await {
                                 Ok((exit_code, stdout, stderr, flags)) => {
                                     let response = RunJobResponse {
                                         job_id: req.job_id,

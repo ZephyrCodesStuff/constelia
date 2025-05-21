@@ -1,0 +1,4 @@
+# Dependencies for your exploits
+requests        # For simple requests
+httpx           # For async requests
+pwntools        # duh
