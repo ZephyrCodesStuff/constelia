@@ -13,6 +13,8 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
+dotenv = { workspace = true }
+inquire = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.13.1"

@@ -40,3 +40,4 @@ uuid = { version = "1.7", features = ["v4"] }
 figment = { version = "0.10.19", features = ["env", "toml"] }
 tonic-web = "0.13.1"
 async-nats = "0.41.0"
+inquire = "0.7.5"

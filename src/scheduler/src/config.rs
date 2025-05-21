@@ -29,7 +29,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: Ipv4Addr::new(0, 0, 0, 0),
-            port: 50052,
+            port: 50051,
         }
     }
 }

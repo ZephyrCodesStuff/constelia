@@ -1,9 +1,27 @@
-use std::path::PathBuf;
+use std::net::Ipv4Addr;
 
 use clap::{Parser, Subcommand};
 
+use crate::commands::{
+    attack::Attack, job::Job, jobs::Jobs, list::List, pull::Pull, run::Run, runners::Runners,
+    stream::Stream, targets::Targets, upload::Upload,
+};
+
 #[derive(Debug, Parser)]
 pub struct Cli {
+    /// IPv4 address of the scheduler to connect to.
+    ///
+    /// Defaults to the configured `HOST` environment variable, or `127.0.0.1` if unspecified.
+    #[clap(short, long)]
+    pub host: Option<Ipv4Addr>,
+
+    /// Port of the scheduler to connect to.
+    ///
+    /// Defaults to the configured `PORT` environment variable, or `50051` if unspecified.
+    #[clap(short, long)]
+    pub port: Option<u16>,
+
+    /// Action to perform.
     #[clap(subcommand)]
     pub action: Action,
 }
@@ -29,6 +47,10 @@ pub enum Action {
     /// Run jobs as a stream
     Stream(Stream),
 
+    /// TODO: add an `Attack` command that inquires for info and
+    /// queues all of the necessary jobs for the given target(s)
+    Attack(Attack),
+
     /// Get a job's result
     Job(Job),
 
@@ -38,61 +60,3 @@ pub enum Action {
     /// Ask runners to pull jobs
     Pull(Pull),
 }
-
-#[derive(Debug, Parser)]
-pub struct Upload {
-    /// Path to the exploit's folder containing:
-    /// - `main.py`
-    /// - `requirements.txt`
-    /// - `docker-entrypoint.sh`
-    #[clap(short, long)]
-    pub exploit: PathBuf,
-}
-
-#[derive(Debug, Parser)]
-pub struct List {}
-
-#[derive(Debug, Parser)]
-pub struct Targets {}
-
-#[derive(Debug, Parser)]
-pub struct Run {
-    /// Name of the exploit to run
-    #[clap(short, long)]
-    pub exploit: String,
-
-    /// Target ID or host
-    #[clap(short, long)]
-    pub target: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct Runners {}
-
-#[derive(Debug, Parser)]
-pub struct Stream {
-    /// Name of the exploit to run
-    #[clap(short, long)]
-    pub exploit: String,
-
-    /// Number of jobs to run in parallel
-    #[clap(short, long, default_value = "5")]
-    pub count: usize,
-
-    /// Target ID or host
-    #[clap(long)]
-    pub target: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct Job {
-    /// ID of the job to get the result of
-    #[clap(short, long)]
-    pub job_id: String,
-}
-
-#[derive(Debug, Parser)]
-pub struct Jobs {}
-
-#[derive(Debug, Parser)]
-pub struct Pull {}

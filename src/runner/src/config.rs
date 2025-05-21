@@ -23,7 +23,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             host: Ipv4Addr::new(127, 0, 0, 1),
-            port: 50052,
+            port: 50051,
         }
     }
 }
@@ -53,7 +53,7 @@ impl Default for RunnerConfig {
         Self {
             id: "runner-1".to_string(),
             host: Ipv4Addr::new(127, 0, 0, 1),
-            port: 50051,
+            port: 50052,
             max_parallel_jobs: 5,
             docker_image: "python:3.13-alpine".to_string(),
         }

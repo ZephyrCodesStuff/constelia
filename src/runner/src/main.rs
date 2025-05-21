@@ -35,10 +35,12 @@ async fn main() -> Result<()> {
 
     info!("Starting exploit runner service");
 
-    // TODO: Make this configurable
-    let addr = SocketAddr::from(([0, 0, 0, 0], 50051));
+    let config = config::Config::new()?;
 
-    info!("Runner service listening on {}", addr);
+    let host = config.runner.host;
+    let port = config.runner.port;
+
+    info!("Runner service listening on {}:{}", host, port);
 
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(runner::FILE_DESCRIPTOR_SET)
@@ -46,7 +48,6 @@ async fn main() -> Result<()> {
         .build_v1()?;
 
     let state = Arc::new(RwLock::new(RunnerStatus::RunnerIdle));
-    let config = config::Config::new()?;
 
     // Spawn heartbeat task
     services::heartbeat::spawn_heartbeat_task(config.clone(), state.clone());
@@ -56,7 +57,7 @@ async fn main() -> Result<()> {
     Server::builder()
         .add_service(RunnerServer::new(runner))
         .add_service(reflection_service)
-        .serve(addr)
+        .serve(SocketAddr::from((host, port)))
         .await?;
 
     Ok(())
