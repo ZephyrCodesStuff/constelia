@@ -1,6 +1,10 @@
-# `constelia` - Distributed CTF Attack System
+# 🌌 `constelia` - Distributed CTF Attacker Infrastructure
 
 `constelia` is a distributed system for running CTF exploits against multiple targets and submitting flags to a CTFd-compatible API.
+
+It achieves this by being fully modular, with each runner connecting to the primary *Scheduler* in order to broadcast its own presence and availability, and by receiving and executing Job requests, returning the captured flags.
+
+This allows `constelia` to be extremely fast, as each attack is fully decoupled from the rest, resulting in perfect parallelism.
 
 ## Components
 
@@ -79,4 +83,4 @@ The project uses:
 
 ## License
 
-MIT 
+See [LICENSE] for more details.
