@@ -16,7 +16,7 @@ This allows `constelia` to be extremely fast, as each attack is fully decoupled 
 ## Prerequisites
 
 - Rust 2021 edition
-- Docker
+- Docker, on each Runner instance
 - Python 3.9+ (for exploits)
 
 ## Building
